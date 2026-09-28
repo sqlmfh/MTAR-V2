@@ -11,6 +11,7 @@ from document_store import FileDocumentStore
 from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
 from prolab_parser import apply_prolab_results, parse_prolab_pdf, suggested_mapping
+from photo_service import normalize_report_photo, photo_data_url
 from report_builder import MOLD_DESCRIPTIONS, create_report
 from workflow import (
     ALLOWED_TRANSITIONS,
@@ -233,6 +234,25 @@ def job_page(job_id: str):
         ui.notify(f"Status changed to {status_label(new_status)}", type="positive")
         status_section.refresh()
 
+    def photo_records() -> list[dict]:
+        return job.setdefault("photos", [])
+
+    def report_photos() -> dict:
+        result: dict = {}
+        for photo in photo_records():
+            content = documents.read_bytes(job["id"], "photos", photo.get("filename", ""))
+            if not content:
+                continue
+            entry = {
+                "content": __import__("io").BytesIO(content),
+                "caption": photo.get("caption", ""),
+            }
+            if photo.get("role") == "property":
+                result.setdefault("property", []).append(entry)
+            elif photo.get("role") == "area" and photo.get("area_id"):
+                result.setdefault(photo["area_id"], []).append(entry)
+        return result
+
     @ui.refreshable
     def status_section():
         current = job.get("status", "draft")
@@ -253,6 +273,7 @@ def job_page(job_id: str):
         overview_tab = ui.tab("Overview", icon="home")
         areas_tab = ui.tab("Inspection Areas", icon="meeting_room")
         samples_tab = ui.tab("Samples", icon="science")
+        photos_tab = ui.tab("Photos", icon="photo_camera")
         lab_tab = ui.tab("Lab Results", icon="biotech")
         report_tab = ui.tab("Report", icon="description")
         docs_tab = ui.tab("Documents", icon="folder")
@@ -351,11 +372,20 @@ def job_page(job_id: str):
                 for sample in job.get("samples", []):
                     if sample.get("area_id") == area_id:
                         sample["area_id"] = None
+                retained_photos = []
+                for photo in job.get("photos", []):
+                    if photo.get("area_id") == area_id:
+                        documents.delete(job["id"], "photos", photo.get("filename", ""))
+                    else:
+                        retained_photos.append(photo)
+                job["photos"] = retained_photos
                 save_job(job, notify=False)
                 areas_section.refresh()
                 samples_section.refresh()
+                photos_section.refresh()
                 report_section.refresh()
-                ui.notify("Inspection area removed; linked samples are now unassigned", type="warning")
+                documents_section.refresh()
+                ui.notify("Inspection area removed; linked samples are now unassigned and its photos were removed", type="warning")
 
             @ui.refreshable
             def areas_section():
@@ -591,6 +621,135 @@ def job_page(job_id: str):
 
             samples_section()
 
+        with ui.tab_panel(photos_tab).classes("px-0"):
+            async def handle_photo_upload(e, role: str, area_id: str | None = None):
+                try:
+                    raw = await e.file.read()
+                    normalized = normalize_report_photo(raw)
+                except Exception as exc:
+                    ui.notify(f"Could not process photo: {exc}", type="negative", multi_line=True)
+                    return
+
+                sequence = len(photo_records()) + 1
+                source_name = _safe_filename(e.file.name, f"photo_{sequence}.jpg")
+                stem = Path(source_name).stem
+                prefix = "property" if role == "property" else f"area_{area_id}"
+                filename = f"{prefix}_{sequence:03d}_{stem}.jpg"
+                documents.save_bytes(job["id"], "photos", filename, normalized)
+
+                photo_records().append(
+                    {
+                        "id": f"photo_{sequence}_{len(normalized)}",
+                        "filename": filename,
+                        "role": role,
+                        "area_id": area_id,
+                        "caption": "",
+                    }
+                )
+                save_job(job, notify=False)
+                photos_section.refresh()
+                documents_section.refresh()
+                ui.notify("Photo uploaded", type="positive")
+
+            def delete_photo(photo_id: str):
+                target = next((p for p in photo_records() if p.get("id") == photo_id), None)
+                if not target:
+                    return
+                documents.delete(job["id"], "photos", target.get("filename", ""))
+                job["photos"] = [p for p in photo_records() if p.get("id") != photo_id]
+                save_job(job, notify=False)
+                photos_section.refresh()
+                documents_section.refresh()
+                ui.notify("Photo removed", type="positive")
+
+            @ui.refreshable
+            def photos_section():
+                ui.label("Inspection Photos").classes("text-xl font-semibold text-slate-800")
+                ui.label(
+                    "The first property photo is used on the report cover. Area photos are inserted under their inspection area in upload order."
+                ).classes("text-sm text-slate-500")
+
+                property_photos = [p for p in photo_records() if p.get("role") == "property"]
+                with ui.card().classes("w-full p-5 mt-4 shadow-sm border border-slate-200"):
+                    with ui.row().classes("w-full items-center justify-between"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Property Exterior").classes("text-lg font-semibold text-slate-800")
+                            ui.label("Upload one or more exterior/property photos.").classes("text-sm text-slate-500")
+                        ui.upload(
+                            label="Add Property Photo",
+                            on_upload=lambda e: handle_photo_upload(e, "property"),
+                            auto_upload=True,
+                            multiple=True,
+                        ).props("accept=image/jpeg,image/png,image/webp").classes("w-72")
+
+                    if property_photos:
+                        with ui.grid(columns=3).classes("w-full gap-4 mt-4"):
+                            for photo in property_photos:
+                                content = documents.read_bytes(job["id"], "photos", photo.get("filename", ""))
+                                if not content:
+                                    continue
+                                with ui.card().classes("w-full p-3 shadow-none border border-slate-200"):
+                                    ui.image(photo_data_url(content)).classes("w-full h-44 object-cover rounded")
+                                    ui.input(
+                                        "Caption",
+                                        value=photo.get("caption", ""),
+                                        on_change=lambda e, target=photo: target.__setitem__("caption", e.value),
+                                    ).props("outlined dense").classes("w-full mt-2")
+                                    with ui.row().classes("w-full justify-end"):
+                                        ui.button(
+                                            icon="delete",
+                                            on_click=lambda photo_id=photo["id"]: delete_photo(photo_id),
+                                        ).props("flat round color=negative")
+
+                ui.label("Inspection Area Photos").classes("text-lg font-semibold text-slate-800 mt-6")
+                areas = job.get("areas", [])
+                if not areas:
+                    ui.label("Create inspection areas before adding area photos.").classes("text-sm text-slate-500")
+                for area in areas:
+                    area_photos = [
+                        p for p in photo_records()
+                        if p.get("role") == "area" and p.get("area_id") == area.get("id")
+                    ]
+                    with ui.card().classes("w-full p-5 mt-3 shadow-sm border border-slate-200"):
+                        with ui.row().classes("w-full items-center justify-between"):
+                            with ui.column().classes("gap-0"):
+                                ui.label(area.get("name") or "Unnamed Inspection Area").classes("text-lg font-semibold")
+                                ui.label(f"{len(area_photos)} photo(s)").classes("text-xs text-slate-500")
+                            ui.upload(
+                                label="Add Area Photos",
+                                on_upload=lambda e, area_id=area["id"]: handle_photo_upload(e, "area", area_id),
+                                auto_upload=True,
+                                multiple=True,
+                            ).props("accept=image/jpeg,image/png,image/webp").classes("w-72")
+
+                        if area_photos:
+                            with ui.grid(columns=3).classes("w-full gap-4 mt-4"):
+                                for photo in area_photos:
+                                    content = documents.read_bytes(job["id"], "photos", photo.get("filename", ""))
+                                    if not content:
+                                        continue
+                                    with ui.card().classes("w-full p-3 shadow-none border border-slate-200"):
+                                        ui.image(photo_data_url(content)).classes("w-full h-44 object-cover rounded")
+                                        ui.input(
+                                            "Caption",
+                                            value=photo.get("caption", ""),
+                                            on_change=lambda e, target=photo: target.__setitem__("caption", e.value),
+                                        ).props("outlined dense").classes("w-full mt-2")
+                                        with ui.row().classes("w-full justify-end"):
+                                            ui.button(
+                                                icon="delete",
+                                                on_click=lambda photo_id=photo["id"]: delete_photo(photo_id),
+                                            ).props("flat round color=negative")
+
+                with ui.row().classes("w-full justify-end mt-4"):
+                    ui.button(
+                        "Save Photo Captions",
+                        icon="save",
+                        on_click=lambda: save_job(job),
+                    ).props("unelevated color=primary")
+
+            photos_section()
+
         with ui.tab_panel(lab_tab).classes("px-0"):
             async def handle_lab_upload(e):
                 try:
@@ -760,7 +919,7 @@ def job_page(job_id: str):
 
             def generate_review_draft():
                 try:
-                    report = create_report(job, {}, lab_pdf_bytes())
+                    report = create_report(job, report_photos(), lab_pdf_bytes())
                     output = report.getvalue()
                 except Exception as exc:
                     ui.notify(f"Could not generate draft: {exc}", type="negative", multi_line=True)
@@ -785,7 +944,7 @@ def job_page(job_id: str):
                     report_section.refresh()
                     return
                 try:
-                    report = create_report(job, {}, lab_bytes)
+                    report = create_report(job, report_photos(), lab_bytes)
                     output = report.getvalue()
                 except Exception as exc:
                     ui.notify(f"Could not generate final report: {exc}", type="negative", multi_line=True)
@@ -849,7 +1008,7 @@ def job_page(job_id: str):
                 if not files:
                     empty_state(
                         "No stored documents",
-                        "Generated COCs, uploaded lab PDFs, and generated assessment reports will appear here.",
+                        "Generated COCs, uploaded lab PDFs, inspection photos, and generated assessment reports will appear here.",
                     )
                     return
                 for item in files:
