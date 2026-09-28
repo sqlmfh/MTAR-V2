@@ -6,13 +6,25 @@ from pathlib import Path
 
 from nicegui import ui
 
+from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
+from document_store import FileDocumentStore
 from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
-from workflow import ALLOWED_TRANSITIONS, JOB_STATUSES, transition_job
+from prolab_parser import apply_prolab_results, parse_prolab_pdf, suggested_mapping
+from report_builder import MOLD_DESCRIPTIONS, create_report
+from workflow import (
+    ALLOWED_TRANSITIONS,
+    final_report_issues,
+    transition_job,
+)
 
 
 DB_PATH = Path(os.environ.get("MTAR_DB_PATH", "mtar_jobs.sqlite3"))
+DOCUMENT_ROOT = Path(os.environ.get("MTAR_DOCUMENT_ROOT", "mtar_data"))
+COC_TEMPLATE = Path(os.environ.get("MTAR_COC_TEMPLATE", "assets/BLANK_COC.pdf"))
+
 store = SQLiteJobStore(DB_PATH)
+documents = FileDocumentStore(DOCUMENT_ROOT)
 
 STATUS_LABELS = {
     "draft": "Draft",
@@ -33,6 +45,12 @@ FINDING_OPTIONS = [
     "No mold detected",
 ]
 
+REPORT_OUTCOMES = [
+    "Pending consultant review",
+    "Mold remediation required",
+    "No significant mold contamination identified",
+]
+
 
 def status_label(status: str) -> str:
     return STATUS_LABELS.get(status, status.replace("_", " ").title())
@@ -47,8 +65,19 @@ def _date_text(value) -> str:
 def _parse_date(value: str, fallback: date) -> date:
     try:
         return date.fromisoformat((value or "").strip())
-    except ValueError:
+    except (TypeError, ValueError):
         return fallback
+
+
+def _safe_filename(value: str, fallback: str) -> str:
+    cleaned = "".join(c if c.isalnum() or c in "._-" else "_" for c in (value or "")).strip("._")
+    return cleaned or fallback
+
+
+def sample_name(sample: dict) -> str:
+    if sample.get("outdoor_control"):
+        return sample.get("name") or "Outdoor Control"
+    return sample.get("name") or sample.get("location") or "Unnamed Sample"
 
 
 def create_field_job() -> dict:
@@ -171,8 +200,17 @@ def job_page(job_id: str):
     def persist():
         save_job(job)
 
+    def advance_status_if(current_status: str, target_status: str):
+        if job.get("status") != current_status:
+            return
+        try:
+            updated = transition_job(job, target_status)
+        except ValueError:
+            return
+        job.clear()
+        job.update(store.save(updated))
+
     def change_status(new_status: str):
-        nonlocal job
         if not new_status or new_status == job.get("status"):
             return
         try:
@@ -296,6 +334,7 @@ def job_page(job_id: str):
                 save_job(job, notify=False)
                 areas_section.refresh()
                 samples_section.refresh()
+                report_section.refresh()
                 ui.notify("Inspection area added", type="positive")
 
             def remove_area(area_id: str):
@@ -306,6 +345,7 @@ def job_page(job_id: str):
                 save_job(job, notify=False)
                 areas_section.refresh()
                 samples_section.refresh()
+                report_section.refresh()
                 ui.notify("Inspection area removed; linked samples are now unassigned", type="warning")
 
             @ui.refreshable
@@ -379,6 +419,8 @@ def job_page(job_id: str):
                 job.setdefault("samples", []).append(sample)
                 save_job(job, notify=False)
                 samples_section.refresh()
+                lab_section.refresh()
+                report_section.refresh()
                 ui.notify(f"{sample_type} added", type="positive")
 
             def remove_sample(sample_id: str):
@@ -394,13 +436,42 @@ def job_page(job_id: str):
                 ]
                 save_job(job, notify=False)
                 samples_section.refresh()
+                lab_section.refresh()
+                report_section.refresh()
                 ui.notify("Sample removed", type="positive")
+
+            def generate_coc():
+                payload = build_coc_payload(job)
+                issues = validate_coc_payload(payload)
+                if issues:
+                    ui.notify("COC needs: " + "; ".join(issues), type="negative", multi_line=True)
+                    return
+                if not COC_TEMPLATE.exists():
+                    ui.notify(
+                        f"COC template not found at {COC_TEMPLATE}. Set MTAR_COC_TEMPLATE or add assets/BLANK_COC.pdf.",
+                        type="negative",
+                        multi_line=True,
+                    )
+                    return
+                try:
+                    output = fill_coc_pdf(COC_TEMPLATE.read_bytes(), payload)
+                except Exception as exc:
+                    ui.notify(f"Could not generate COC: {exc}", type="negative", multi_line=True)
+                    return
+                filename = f"{_safe_filename(job.get('client_name', ''), 'Client')}_PROLAB_COC.pdf"
+                documents.save_bytes(job["id"], "coc", filename, output)
+                job["latest_coc_filename"] = filename
+                save_job(job, notify=False)
+                documents_section.refresh()
+                ui.download(output, filename=filename, media_type="application/pdf")
+                ui.notify("PRO-LAB COC generated", type="positive")
 
             @ui.refreshable
             def samples_section():
                 with ui.row().classes("w-full items-center justify-between"):
                     ui.label("Samples").classes("text-xl font-semibold text-slate-800")
                     with ui.row().classes("gap-2"):
+                        ui.button("Generate COC", icon="description", on_click=generate_coc).props("outline color=primary")
                         ui.button(
                             "Add Air Sample",
                             icon="air",
@@ -424,13 +495,17 @@ def job_page(job_id: str):
                     protected = sample.get("outdoor_control", False)
                     with ui.card().classes("w-full p-5 mt-3 shadow-sm border border-slate-200"):
                         with ui.row().classes("w-full items-center"):
-                            ui.label(
-                                "Outdoor Control" if protected else f"Sample {index}"
-                            ).classes("text-sm font-medium text-slate-500")
+                            ui.label("Outdoor Control" if protected else f"Sample {index}").classes(
+                                "text-sm font-medium text-slate-500"
+                            )
                             ui.label(sample.get("type", "")).classes(
                                 "px-2 py-1 rounded bg-slate-100 text-slate-600 text-xs"
                             )
                             ui.space()
+                            if sample.get("lab_determination"):
+                                ui.label(sample["lab_determination"]).classes(
+                                    "px-2 py-1 rounded bg-blue-50 text-blue-700 text-xs font-medium"
+                                )
                             if not protected:
                                 ui.button(
                                     icon="delete",
@@ -445,7 +520,7 @@ def job_page(job_id: str):
                             ).props("outlined").classes("w-full")
                             ui.input(
                                 "Serial Number",
-                                value=sample.get("serial_number", ""),
+                                value=sample.get("serial_number") or sample.get("lab_serial_number", ""),
                                 on_change=lambda e, target=sample: target.__setitem__("serial_number", e.value),
                             ).props("outlined").classes("w-full")
                             ui.input(
@@ -484,22 +559,283 @@ def job_page(job_id: str):
             samples_section()
 
         with ui.tab_panel(lab_tab).classes("px-0"):
-            empty_state(
-                "Lab automation is next",
-                "This tab will receive PRO-LAB PDFs automatically, match them to this job, parse sample results, and flag exceptions for review.",
-            )
+            async def handle_lab_upload(e):
+                try:
+                    pdf_bytes = await e.file.read()
+                    parsed = parse_prolab_pdf(pdf_bytes)
+                except Exception as exc:
+                    ui.notify(f"Could not read lab PDF: {exc}", type="negative", multi_line=True)
+                    return
+
+                if not parsed.get("samples"):
+                    warning = "; ".join(parsed.get("warnings", [])) or "No structured PRO-LAB result table was found."
+                    ui.notify(warning, type="negative", multi_line=True)
+                    return
+
+                filename = _safe_filename(e.file.name, "PROLAB_Result.pdf")
+                documents.save_bytes(job["id"], "lab", filename, pdf_bytes)
+                job["lab_filename"] = filename
+                job["lab_parsed"] = parsed
+                job["lab_mapping"] = suggested_mapping(parsed, job)
+
+                advance_status_if("awaiting_lab", "lab_received")
+                save_job(job, notify=False)
+                status_section.refresh()
+                lab_section.refresh()
+                documents_section.refresh()
+                ui.notify(f"Imported {len(parsed['samples'])} PRO-LAB samples", type="positive")
+
+            def set_mapping(lab_key: str, sample_id: str | None):
+                mapping = job.setdefault("lab_mapping", {})
+                if sample_id:
+                    mapping[lab_key] = sample_id
+                else:
+                    mapping.pop(lab_key, None)
+
+            def apply_lab():
+                parsed = job.get("lab_parsed") or {}
+                parsed_samples = parsed.get("samples", [])
+                mapping = job.get("lab_mapping") or {}
+
+                missing = [sample.get("key") for sample in parsed_samples if not mapping.get(sample.get("key"))]
+                mapped_values = [mapping.get(sample.get("key")) for sample in parsed_samples if mapping.get(sample.get("key"))]
+                if missing:
+                    ui.notify("Map every lab sample before applying results.", type="negative")
+                    return
+                if len(mapped_values) != len(set(mapped_values)):
+                    ui.notify("Each lab sample must map to a different MTAR sample.", type="negative")
+                    return
+
+                apply_prolab_results(job, parsed, mapping, MOLD_DESCRIPTIONS.keys())
+                advance_status_if("lab_received", "report_review")
+                save_job(job, notify=False)
+                status_section.refresh()
+                samples_section.refresh()
+                lab_section.refresh()
+                report_section.refresh()
+                ui.notify("Lab results applied to this job", type="positive")
+
+            @ui.refreshable
+            def lab_section():
+                with ui.row().classes("w-full items-center justify-between"):
+                    ui.label("PRO-LAB Results").classes("text-xl font-semibold text-slate-800")
+                    if job.get("lab_filename"):
+                        ui.label(job["lab_filename"]).classes("text-sm text-slate-500")
+
+                ui.upload(
+                    label="Upload PRO-LAB Certificate of Mold Analysis",
+                    on_upload=handle_lab_upload,
+                    auto_upload=True,
+                    max_files=1,
+                ).props("accept=.pdf").classes("w-full mt-3")
+
+                parsed = job.get("lab_parsed") or {}
+                parsed_samples = parsed.get("samples", [])
+                if not parsed_samples:
+                    empty_state(
+                        "No lab report imported",
+                        "Upload the PRO-LAB PDF after sampling. MTAR will parse the result table and suggest sample matches.",
+                    )
+                    return
+
+                metadata = parsed.get("metadata", {})
+                with ui.card().classes("w-full p-4 mt-4 shadow-sm border border-slate-200"):
+                    with ui.grid(columns=3).classes("w-full gap-4"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Report #").classes("text-xs text-slate-500")
+                            ui.label(metadata.get("report_number") or "—").classes("font-semibold")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Project").classes("text-xs text-slate-500")
+                            ui.label(metadata.get("project_name") or "—").classes("font-semibold")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Samples").classes("text-xs text-slate-500")
+                            ui.label(str(len(parsed_samples))).classes("font-semibold")
+
+                options = {
+                    sample["id"]: f"{sample_name(sample)} · {sample.get('serial_number') or sample.get('lab_serial_number') or 'no serial'}"
+                    for sample in job.get("samples", [])
+                }
+                mapping = job.setdefault("lab_mapping", {})
+
+                ui.label("Review Sample Matching").classes("text-lg font-semibold text-slate-800 mt-5")
+                ui.label(
+                    "MTAR prefers exact serial-number matches. Confirm every mapping before applying laboratory results."
+                ).classes("text-sm text-slate-500")
+
+                for lab in parsed_samples:
+                    with ui.card().classes("w-full p-4 mt-3 shadow-sm border border-slate-200"):
+                        with ui.grid(columns=4).classes("w-full gap-3 items-center"):
+                            with ui.column().classes("gap-0"):
+                                ui.label(lab.get("location") or "Unnamed Lab Sample").classes("font-semibold")
+                                ui.label(lab.get("coc_line") or "—").classes("text-xs text-slate-500")
+                            with ui.column().classes("gap-0"):
+                                ui.label("Lab Serial").classes("text-xs text-slate-500")
+                                ui.label(lab.get("serial_number") or "—")
+                            with ui.column().classes("gap-0"):
+                                ui.label("Determination").classes("text-xs text-slate-500")
+                                determination = lab.get("determination") or "—"
+                                ui.label(determination).classes(
+                                    "font-semibold text-red-700" if "UNUSUAL" in determination or "ELEVATED" in determination else "font-semibold"
+                                )
+                            ui.select(
+                                options,
+                                value=mapping.get(lab.get("key")),
+                                label="MTAR Sample",
+                                on_change=lambda e, key=lab.get("key"): set_mapping(key, e.value),
+                            ).props("outlined clearable").classes("w-full")
+
+                        fungi = lab.get("fungi", {})
+                        if fungi:
+                            summary = ", ".join(f"{name}: {value}" for name, value in fungi.items())
+                            ui.label(summary).classes("text-xs text-slate-500 mt-2")
+                        if lab.get("observations"):
+                            ui.label(lab["observations"]).classes("text-sm text-slate-700 mt-2")
+
+                with ui.row().classes("w-full justify-end mt-4"):
+                    ui.button("Apply Lab Results", icon="check_circle", on_click=apply_lab).props("unelevated color=primary")
+
+                if job.get("air_lab_rows") or job.get("surface_lab_rows"):
+                    ui.separator().classes("my-5")
+                    ui.label("Applied Results").classes("text-lg font-semibold text-slate-800")
+
+                    samples_by_id = {sample["id"]: sample for sample in job.get("samples", [])}
+                    for sample in job.get("samples", []):
+                        if not sample.get("lab_determination"):
+                            continue
+                        with ui.card().classes("w-full p-4 mt-3 shadow-none border border-slate-200"):
+                            with ui.row().classes("w-full items-center"):
+                                ui.label(sample_name(sample)).classes("font-semibold")
+                                ui.space()
+                                ui.label(sample.get("lab_determination", "")).classes(
+                                    "px-2 py-1 rounded bg-slate-100 text-slate-700 text-xs font-medium"
+                                )
+                            if sample.get("lab_total_spores") is not None:
+                                ui.label(f"Total spores: {sample['lab_total_spores']} spores/m³").classes("text-sm text-slate-600")
+                            if sample.get("lab_fungi"):
+                                ui.label(
+                                    ", ".join(f"{name}: {value}" for name, value in sample["lab_fungi"].items())
+                                ).classes("text-xs text-slate-500")
+
+            lab_section()
 
         with ui.tab_panel(report_tab).classes("px-0"):
-            empty_state(
-                "Report workflow is next",
-                "The existing report builder will be connected here after persistent job editing is stable. Final generation will use the shared validation gate.",
-            )
+            def lab_pdf_bytes() -> bytes | None:
+                filename = job.get("lab_filename")
+                if not filename:
+                    return None
+                return documents.read_bytes(job["id"], "lab", filename)
+
+            def generate_review_draft():
+                try:
+                    report = create_report(job, {}, lab_pdf_bytes())
+                    output = report.getvalue()
+                except Exception as exc:
+                    ui.notify(f"Could not generate draft: {exc}", type="negative", multi_line=True)
+                    return
+                filename = f"{_safe_filename(job.get('client_name', ''), 'Client')}_Mold_Assessment_DRAFT.docx"
+                documents.save_bytes(job["id"], "reports", filename, output)
+                job["latest_draft_filename"] = filename
+                save_job(job, notify=False)
+                documents_section.refresh()
+                ui.download(
+                    output,
+                    filename=filename,
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+                ui.notify("Review draft generated", type="positive")
+
+            def generate_final_report():
+                lab_bytes = lab_pdf_bytes()
+                issues = final_report_issues(job, lab_pdf_present=lab_bytes is not None)
+                if issues:
+                    ui.notify("Final report blocked: " + "; ".join(issues), type="negative", multi_line=True)
+                    report_section.refresh()
+                    return
+                try:
+                    report = create_report(job, {}, lab_bytes)
+                    output = report.getvalue()
+                except Exception as exc:
+                    ui.notify(f"Could not generate final report: {exc}", type="negative", multi_line=True)
+                    return
+
+                filename = f"{_safe_filename(job.get('client_name', ''), 'Client')}_Mold_Assessment_FINAL.docx"
+                documents.save_bytes(job["id"], "reports", filename, output)
+                job["latest_final_filename"] = filename
+                advance_status_if("report_review", "ready_to_send")
+                save_job(job, notify=False)
+                status_section.refresh()
+                documents_section.refresh()
+                report_section.refresh()
+                ui.download(
+                    output,
+                    filename=filename,
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+                ui.notify("Final report generated", type="positive")
+
+            @ui.refreshable
+            def report_section():
+                ui.label("Report Review").classes("text-xl font-semibold text-slate-800")
+                ui.select(
+                    REPORT_OUTCOMES,
+                    value=job.get("report_outcome", "Pending consultant review"),
+                    label="Consultant Report Outcome",
+                    on_change=lambda e: job.__setitem__("report_outcome", e.value),
+                ).props("outlined").classes("w-full max-w-xl mt-3")
+
+                lab_present = bool(job.get("lab_filename")) and documents.exists(
+                    job["id"], "lab", job.get("lab_filename", "")
+                )
+                issues = final_report_issues(job, lab_pdf_present=lab_present)
+
+                with ui.card().classes("w-full p-4 mt-4 shadow-sm border border-slate-200"):
+                    if issues:
+                        ui.label("Final report is not ready").classes("font-semibold text-amber-700")
+                        for issue in issues:
+                            ui.label(f"• {issue}").classes("text-sm text-slate-600")
+                    else:
+                        ui.label("Final report validation passed").classes("font-semibold text-green-700")
+                        ui.label(
+                            "The job has the required fields, sample assignments, lab PDF, reviewed area findings, and consultant outcome."
+                        ).classes("text-sm text-slate-600")
+
+                with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                    ui.button("Save Outcome", icon="save", on_click=persist).props("outline color=primary")
+                    ui.button("Generate Review Draft", icon="preview", on_click=generate_review_draft).props("outline color=primary")
+                    ui.button("Generate Final DOCX", icon="description", on_click=generate_final_report).props(
+                        "unelevated color=primary"
+                    )
+
+            report_section()
 
         with ui.tab_panel(docs_tab).classes("px-0"):
-            empty_state(
-                "Document center is next",
-                "COCs, lab PDFs, photos, DOCX drafts, and final PDFs will be organized here under the job record.",
-            )
+            @ui.refreshable
+            def documents_section():
+                ui.label("Documents").classes("text-xl font-semibold text-slate-800")
+                files = documents.list_files(job["id"])
+                if not files:
+                    empty_state(
+                        "No stored documents",
+                        "Generated COCs, uploaded lab PDFs, and generated assessment reports will appear here.",
+                    )
+                    return
+                for item in files:
+                    path = Path(item["path"])
+                    with ui.card().classes("w-full p-4 mt-3 shadow-sm border border-slate-200"):
+                        with ui.row().classes("w-full items-center gap-3"):
+                            ui.icon("description").classes("text-slate-400")
+                            with ui.column().classes("gap-0 grow"):
+                                ui.label(item["name"]).classes("font-semibold text-slate-800")
+                                ui.label(f"{item['category']} · {item['size'] / 1024:.1f} KB").classes(
+                                    "text-xs text-slate-500"
+                                )
+                            ui.button(
+                                "Download",
+                                icon="download",
+                                on_click=lambda p=path, name=item["name"]: ui.download(p, filename=name),
+                            ).props("flat color=primary")
+
+            documents_section()
 
 
 ui.add_head_html(
