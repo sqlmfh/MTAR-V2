@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import date
+import asyncio
 import os
 from pathlib import Path
 from uuid import uuid4
 
-from nicegui import ui
+from nicegui import app, run, ui
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
