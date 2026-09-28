@@ -19,6 +19,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile NiceGUI app
-        run: python -m py_compile nicegui_app.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py
+        run: python -m py_compile nicegui_app.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py gmail_intake.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
