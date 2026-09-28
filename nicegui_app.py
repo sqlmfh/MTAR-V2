@@ -313,10 +313,23 @@ def dashboard_page():
                         ui.label(
                             "Gmail API credentials are not configured on this deployment yet."
                         ).classes("text-sm text-amber-700")
+                    if gmail_client.configured():
+                        if LAST_GMAIL_CHECK.get("status") == "ok":
+                            ui.label(
+                                f"Last check: {LAST_GMAIL_CHECK.get('checked', 0)} PDFs · "
+                                f"{LAST_GMAIL_CHECK.get('imported', 0)} imported · "
+                                f"{LAST_GMAIL_CHECK.get('ambiguous', 0)} need review"
+                            ).classes("text-xs text-slate-400")
+                        elif LAST_GMAIL_CHECK.get("status") == "error":
+                            ui.label("Last automatic check failed.").classes("text-xs text-red-500")
+                        ui.label(
+                            f"Automatic polling every {GMAIL_POLL_SECONDS // 60} minute(s)."
+                        ).classes("text-xs text-slate-400")
 
-                def check_now():
+                async def check_now():
+                    global LAST_GMAIL_CHECK
                     try:
-                        result = run_gmail_intake()
+                        result = await run.io_bound(run_gmail_intake)
                     except Exception as exc:
                         ui.notify(f"Gmail check failed: {exc}", type="negative", multi_line=True)
                         return
@@ -327,6 +340,14 @@ def dashboard_page():
                             multi_line=True,
                         )
                         return
+                    LAST_GMAIL_CHECK = {
+                        "status": "ok",
+                        "checked": result.get("checked", 0),
+                        "imported": result.get("imported", 0),
+                        "ambiguous": len(result.get("ambiguous", [])),
+                        "ignored": result.get("ignored", 0),
+                    }
+                    gmail_panel.refresh()
                     summary = (
                         f"Checked {result['checked']} PDF attachment(s); "
                         f"imported {result['imported']}; "
