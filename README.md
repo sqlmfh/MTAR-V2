@@ -86,3 +86,21 @@ The OAuth token only needs the Gmail read-only scope. The intake worker searches
 Automatic matching is conservative. It rewards exact client/property metadata and especially sample serial-number matches. If the best match is weak or too close to another job, MTAR does not attach the report automatically and instead surfaces it for review.
 
 The dashboard also includes a **Check Gmail Now** control for an immediate run. The background poll continues while the NiceGUI server is running.
+
+
+### Railway deployment
+
+The `automation-foundation` branch is prepared for Railway with `railway.json`.
+
+Recommended Railway setup:
+
+1. Create a new Railway project from `sqlmfh/MTAR-V2`.
+2. Deploy branch `automation-foundation`.
+3. Add a persistent Volume to the service. MTAR automatically uses Railway's `RAILWAY_VOLUME_MOUNT_PATH` for the SQLite job database and document storage.
+4. Add the environment variables shown in `.env.example`. Keep real Gmail secrets only in Railway Variables.
+5. Keep `MTAR_RELOAD=0` in production.
+6. Generate a Railway public domain for the service.
+
+Railway runs `python nicegui_app.py` and health-checks `/`. The app listens on Railway's injected `PORT`.
+
+The current storage design is suitable for initial testing and a single running MTAR instance. Before multi-instance production use, replace SQLite with PostgreSQL and move binary documents to shared cloud/object storage.
