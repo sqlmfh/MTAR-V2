@@ -236,6 +236,35 @@ def run_gmail_intake() -> dict:
     return result
 
 
+async def gmail_monitor():
+    """Run Gmail intake continuously while the NiceGUI server is online."""
+    global LAST_GMAIL_CHECK
+    while True:
+        if gmail_client.configured():
+            try:
+                result = await run.io_bound(run_gmail_intake)
+                LAST_GMAIL_CHECK = {
+                    "status": "ok",
+                    "checked": result.get("checked", 0),
+                    "imported": result.get("imported", 0),
+                    "ambiguous": len(result.get("ambiguous", [])),
+                    "ignored": result.get("ignored", 0),
+                }
+            except Exception as exc:
+                LAST_GMAIL_CHECK = {
+                    "status": "error",
+                    "error": str(exc),
+                    "checked": 0,
+                    "imported": 0,
+                    "ambiguous": 0,
+                    "ignored": 0,
+                }
+        await asyncio.sleep(GMAIL_POLL_SECONDS)
+
+
+app.on_startup(gmail_monitor)
+
+
 def page_shell(title: str, subtitle: str | None = None):
     with ui.header().classes("bg-slate-900 text-white items-center px-6 h-16"):
         ui.label("MTAR").classes("text-xl font-bold tracking-wide")
