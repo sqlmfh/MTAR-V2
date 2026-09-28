@@ -31,6 +31,14 @@ UPLOADED_COC_TEMPLATE = DOCUMENT_ROOT / "templates" / "BLANK_COC.pdf"
 store = SQLiteJobStore(DB_PATH)
 documents = FileDocumentStore(DOCUMENT_ROOT)
 gmail_client = GmailApiClient()
+GMAIL_POLL_SECONDS = max(60, int(os.environ.get("GMAIL_POLL_SECONDS", "300")))
+LAST_GMAIL_CHECK = {
+    "status": "not_run",
+    "checked": 0,
+    "imported": 0,
+    "ambiguous": 0,
+    "ignored": 0,
+}
 
 STATUS_LABELS = {
     "draft": "Draft",
