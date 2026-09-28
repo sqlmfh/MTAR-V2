@@ -395,30 +395,75 @@ def parse_prolab_pdf(pdf: bytes | bytearray | BinaryIO) -> dict:
 
 
 def suggested_mapping(parsed: dict, job: dict) -> dict[str, str]:
-    """Suggest lab-sample -> job-sample mappings without mutating the job."""
+    """Suggest lab-sample -> job-sample mappings without mutating the job.
+
+    Matching is intentionally conservative and deterministic:
+    1. outdoor controls map to outdoor controls;
+    2. exact sample serial numbers are preferred;
+    3. exact sample/location names are used next;
+    4. only then do we fall back to the next unused sample of the same media type.
+
+    This supports the inspection-first workflow where sample serial numbers are
+    entered before the PRO-LAB PDF arrives.
+    """
     mappings: dict[str, str] = {}
     parsed_samples = parsed.get("samples", [])
     job_samples = job.get("samples", [])
 
-    outdoor_jobs = [s for s in job_samples if s.get("outdoor_control")]
-    indoor_air_jobs = [s for s in job_samples if s.get("type") == "Air Sample" and not s.get("outdoor_control")]
-    swab_jobs = [
-        s for s in job_samples
-        if s.get("type") in {"Swab", "Surface Sample"}
-    ]
+    def norm(value) -> str:
+        return _upper(str(value or ""))
+
+    def job_serial(sample: dict) -> str:
+        return norm(sample.get("serial_number") or sample.get("lab_serial_number"))
+
+    def job_name(sample: dict) -> str:
+        return norm(sample.get("name") or sample.get("location"))
+
+    def same_media(lab: dict, sample: dict) -> bool:
+        if lab.get("is_air"):
+            return sample.get("type") == "Air Sample"
+        return sample.get("type") in {"Swab", "Surface Sample"}
 
     used: set[str] = set()
+
     for lab in parsed_samples:
-        loc = _upper(lab.get("location", ""))
-        det = _upper(lab.get("determination", ""))
-        is_control = "OUTDOOR" in loc or det == "CONTROL"
-        candidates = outdoor_jobs if is_control else (indoor_air_jobs if lab.get("is_air") else swab_jobs)
-        target = next((s for s in candidates if s["id"] not in used), None)
+        location = norm(lab.get("location"))
+        determination = norm(lab.get("determination"))
+        is_control = "OUTDOOR" in location or determination == "CONTROL"
+
+        candidates = [
+            sample
+            for sample in job_samples
+            if sample.get("id") not in used
+            and (
+                sample.get("outdoor_control")
+                if is_control
+                else (not sample.get("outdoor_control") and same_media(lab, sample))
+            )
+        ]
+
+        target = None
+        serial = norm(lab.get("serial_number"))
+        if serial:
+            target = next(
+                (sample for sample in candidates if job_serial(sample) == serial),
+                None,
+            )
+
+        if target is None and location:
+            target = next(
+                (sample for sample in candidates if job_name(sample) == location),
+                None,
+            )
+
+        if target is None:
+            target = next(iter(candidates), None)
+
         if target:
             mappings[lab["key"]] = target["id"]
             used.add(target["id"])
-    return mappings
 
+    return mappings
 
 def apply_prolab_results(
     job: dict,
