@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from nicegui import ui
 
@@ -630,16 +631,26 @@ def job_page(job_id: str):
                     ui.notify(f"Could not process photo: {exc}", type="negative", multi_line=True)
                     return
 
+                if role == "property":
+                    retained = []
+                    for existing in photo_records():
+                        if existing.get("role") == "property":
+                            documents.delete(job["id"], "photos", existing.get("filename", ""))
+                        else:
+                            retained.append(existing)
+                    job["photos"] = retained
+
+                token = uuid4().hex[:8]
                 sequence = len(photo_records()) + 1
                 source_name = _safe_filename(e.file.name, f"photo_{sequence}.jpg")
                 stem = Path(source_name).stem
                 prefix = "property" if role == "property" else f"area_{area_id}"
-                filename = f"{prefix}_{sequence:03d}_{stem}.jpg"
+                filename = f"{prefix}_{token}_{stem}.jpg"
                 documents.save_bytes(job["id"], "photos", filename, normalized)
 
                 photo_records().append(
                     {
-                        "id": f"photo_{sequence}_{len(normalized)}",
+                        "id": f"photo_{token}",
                         "filename": filename,
                         "role": role,
                         "area_id": area_id,
@@ -674,12 +685,12 @@ def job_page(job_id: str):
                     with ui.row().classes("w-full items-center justify-between"):
                         with ui.column().classes("gap-0"):
                             ui.label("Property Exterior").classes("text-lg font-semibold text-slate-800")
-                            ui.label("Upload one or more exterior/property photos.").classes("text-sm text-slate-500")
+                            ui.label("Upload the exterior/property photo used on the report cover. Uploading a new one replaces it.").classes("text-sm text-slate-500")
                         ui.upload(
                             label="Add Property Photo",
                             on_upload=lambda e: handle_photo_upload(e, "property"),
                             auto_upload=True,
-                            multiple=True,
+                            max_files=1,
                         ).props("accept=image/jpeg,image/png,image/webp").classes("w-72")
 
                     if property_photos:
