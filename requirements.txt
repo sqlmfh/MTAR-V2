@@ -4,3 +4,5 @@ pandas
 pymupdf
 Pillow
 nicegui
+google-api-python-client
+google-auth
