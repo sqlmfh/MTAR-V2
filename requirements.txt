@@ -3,3 +3,4 @@ python-docx
 pandas
 pymupdf
 Pillow
+nicegui
