@@ -42,6 +42,13 @@ class FileDocumentStore:
     def exists(self, job_id: str, category: str, filename: str) -> bool:
         return self.path(job_id, category, filename).exists()
 
+    def delete(self, job_id: str, category: str, filename: str) -> bool:
+        target = self.path(job_id, category, filename)
+        if not target.exists():
+            return False
+        target.unlink()
+        return True
+
     def list_files(self, job_id: str) -> list[dict]:
         root = self._job_dir(job_id)
         files = []
