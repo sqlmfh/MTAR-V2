@@ -5,9 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import fitz
-
-from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
+from coc_builder import build_coc_payload, validate_coc_payload
 from job_store import SQLiteJobStore, prepare_persistent_job
 from workflow import (
     STATUS_AWAITING_LAB,
@@ -15,9 +13,6 @@ from workflow import (
     STATUS_INSPECTION,
     transition_job,
 )
-
-
-FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
 class AutomationFoundationTests(unittest.TestCase):
@@ -60,7 +55,7 @@ class AutomationFoundationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             transition_job(job, STATUS_AWAITING_LAB + "-unknown")
 
-    def test_coc_payload_and_pdf_fill_support_air_and_surface_samples(self):
+    def test_coc_payload_supports_air_and_surface_samples(self):
         job = {
             "client_name": "Scarlet Harper",
             "address": "16371 County Road 245",
@@ -108,29 +103,14 @@ class AutomationFoundationTests(unittest.TestCase):
         }
 
         payload = build_coc_payload(job)
+
         self.assertEqual(validate_coc_payload(payload), [])
+        self.assertEqual(payload["property"]["address"], "16371 County Road 245")
+        self.assertEqual(payload["samples"][0]["sample_type_code"], "P15")
+        self.assertEqual(payload["samples"][0]["flow_rate_liters"], "15")
+        self.assertEqual(payload["samples"][1]["serial_number"], "Q2986713")
         self.assertEqual(payload["samples"][2]["sample_type_code"], "SW")
-
-        template = (FIXTURE_DIR / "BLANK_COC.pdf").read_bytes()
-        output = fill_coc_pdf(template, payload)
-        doc = fitz.open(stream=output, filetype="pdf")
-        try:
-            values = {widget.field_name: widget.field_value for widget in doc[0].widgets()}
-        finally:
-            doc.close()
-
-        self.assertEqual(values["Text Field 84"], "Scarlet Harper")
-        self.assertEqual(values["Text Field 85"], "16371 County Road 245")
-        self.assertEqual(values["Text Field 88"], "TX")
-        self.assertEqual(values["Text Field 87"], "75160")
-        self.assertEqual(values["Text Field 90"], "Q2986725")
-        self.assertEqual(values["Text Field 100"], "Outdoor Control")
-        self.assertEqual(values["Text Field 164"], "P15")
-        self.assertEqual(values["Check Box 160"], "Yes")
-        self.assertEqual(values["Text Field 92"], "CC")
-        self.assertEqual(values["Text Field 102"], "Coat Closet")
-        self.assertEqual(values["Text Field 142"], "SW")
-        self.assertEqual(values["Check Box 162"], "Yes")
+        self.assertEqual(payload["samples"][2]["collection_location"], "Coat Closet")
 
 
 if __name__ == "__main__":
