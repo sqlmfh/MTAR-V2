@@ -9,6 +9,7 @@ from nicegui import ui
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
+from gmail_intake import GmailApiClient, confident_job_match, inspect_attachment
 from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
 from prolab_parser import apply_prolab_results, parse_prolab_pdf, suggested_mapping
@@ -28,6 +29,7 @@ UPLOADED_COC_TEMPLATE = DOCUMENT_ROOT / "templates" / "BLANK_COC.pdf"
 
 store = SQLiteJobStore(DB_PATH)
 documents = FileDocumentStore(DOCUMENT_ROOT)
+gmail_client = GmailApiClient()
 
 STATUS_LABELS = {
     "draft": "Draft",
@@ -126,6 +128,105 @@ def save_job(job: dict, *, notify: bool = True) -> dict:
     return job
 
 
+def run_gmail_intake() -> dict:
+    """Check Gmail once and auto-attach only high-confidence PRO-LAB results."""
+    if not gmail_client.configured():
+        return {
+            "configured": False,
+            "checked": 0,
+            "imported": 0,
+            "ambiguous": [],
+            "ignored": 0,
+            "skipped": 0,
+        }
+
+    all_summaries = store.list(limit=500)
+    all_jobs = [job for summary in all_summaries if (job := store.get(summary.id))]
+    processed_ids = {
+        message_id
+        for job in all_jobs
+        for message_id in job.get("gmail_message_ids", [])
+    }
+    awaiting_jobs = [job for job in all_jobs if job.get("status") == "awaiting_lab"]
+
+    result = {
+        "configured": True,
+        "checked": 0,
+        "imported": 0,
+        "ambiguous": [],
+        "ignored": 0,
+        "skipped": 0,
+    }
+
+    attachments = gmail_client.search_pdf_attachments()
+    result["checked"] = len(attachments)
+
+    for attachment in attachments:
+        if attachment.message_id in processed_ids:
+            result["skipped"] += 1
+            continue
+
+        inspected = inspect_attachment(attachment)
+        parsed = inspected["parsed"]
+        if not parsed.get("samples"):
+            result["ignored"] += 1
+            continue
+
+        match = confident_job_match(parsed, awaiting_jobs)
+        if not match:
+            metadata = parsed.get("metadata", {})
+            result["ambiguous"].append(
+                {
+                    "message_id": attachment.message_id,
+                    "subject": attachment.subject,
+                    "filename": attachment.filename,
+                    "project_name": metadata.get("project_name", ""),
+                    "report_number": metadata.get("report_number", ""),
+                }
+            )
+            continue
+
+        target = next((job for job in awaiting_jobs if job.get("id") == match["job_id"]), None)
+        if not target:
+            result["ambiguous"].append(
+                {
+                    "message_id": attachment.message_id,
+                    "subject": attachment.subject,
+                    "filename": attachment.filename,
+                    "project_name": parsed.get("metadata", {}).get("project_name", ""),
+                    "report_number": parsed.get("metadata", {}).get("report_number", ""),
+                }
+            )
+            continue
+
+        filename = _safe_filename(attachment.filename, "PROLAB_Result.pdf")
+        documents.save_bytes(target["id"], "lab", filename, attachment.content)
+        target["lab_filename"] = filename
+        target["lab_parsed"] = parsed
+        target["lab_mapping"] = suggested_mapping(parsed, target)
+        target.setdefault("gmail_message_ids", []).append(attachment.message_id)
+        target["gmail_source"] = {
+            "message_id": attachment.message_id,
+            "thread_id": attachment.thread_id,
+            "sender": attachment.sender,
+            "subject": attachment.subject,
+            "filename": filename,
+            "match_score": match["score"],
+            "match_reasons": match["reasons"],
+        }
+
+        try:
+            target = transition_job(target, "lab_received")
+        except ValueError:
+            pass
+        store.save(target)
+        processed_ids.add(attachment.message_id)
+        awaiting_jobs = [job for job in awaiting_jobs if job.get("id") != target.get("id")]
+        result["imported"] += 1
+
+    return result
+
+
 def page_shell(title: str, subtitle: str | None = None):
     with ui.header().classes("bg-slate-900 text-white items-center px-6 h-16"):
         ui.label("MTAR").classes("text-xl font-bold tracking-wide")
@@ -159,6 +260,55 @@ def dashboard_page():
         job = create_field_job()
         save_job(job, notify=False)
         ui.navigate.to(f"/jobs/{job['id']}")
+
+    @ui.refreshable
+    def gmail_panel():
+        with ui.card().classes("w-full p-4 mb-3 shadow-sm border border-slate-200"):
+            with ui.row().classes("w-full items-center gap-3"):
+                with ui.column().classes("gap-0 grow"):
+                    ui.label("PRO-LAB Gmail Intake").classes("font-semibold text-slate-800")
+                    if gmail_client.configured():
+                        ui.label(
+                            "Connected by server-side Gmail API credentials. High-confidence reports can be matched to Awaiting Lab jobs automatically."
+                        ).classes("text-sm text-slate-500")
+                    else:
+                        ui.label(
+                            "Gmail API credentials are not configured on this deployment yet."
+                        ).classes("text-sm text-amber-700")
+
+                def check_now():
+                    try:
+                        result = run_gmail_intake()
+                    except Exception as exc:
+                        ui.notify(f"Gmail check failed: {exc}", type="negative", multi_line=True)
+                        return
+                    if not result["configured"]:
+                        ui.notify(
+                            "Configure GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN on the NiceGUI host.",
+                            type="warning",
+                            multi_line=True,
+                        )
+                        return
+                    summary = (
+                        f"Checked {result['checked']} PDF attachment(s); "
+                        f"imported {result['imported']}; "
+                        f"needs review {len(result['ambiguous'])}; "
+                        f"ignored {result['ignored']}."
+                    )
+                    ui.notify(summary, type="positive" if not result["ambiguous"] else "warning", multi_line=True)
+                    if result["ambiguous"]:
+                        for item in result["ambiguous"][:5]:
+                            ui.notify(
+                                f"Needs review: {item['project_name'] or item['subject']} · report {item['report_number'] or 'unknown'}",
+                                type="warning",
+                            )
+                    ui.navigate.to("/")
+
+                ui.button("Check Gmail Now", icon="mail", on_click=check_now).props(
+                    "unelevated color=primary" if gmail_client.configured() else "outline color=primary"
+                )
+
+    gmail_panel()
 
     with ui.row().classes("w-full items-center justify-between mb-2"):
         with ui.row().classes("gap-3"):
