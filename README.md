@@ -67,3 +67,22 @@ SQLite is only the first adapter. It is suitable for local development and a sin
 ### COC note
 
 The supplied PRO-LAB COC was manually verified against `coc_builder.py`. Its visible State/ZIP positions do not match the field numbering implied by the existing default values, so the builder maps values by visible form position. Future template changes should be re-verified before deployment.
+
+
+### Gmail / PRO-LAB intake
+
+NiceGUI can poll the mailbox that receives PRO-LAB result emails and automatically attach high-confidence PDF matches to jobs in `Awaiting Lab`.
+
+Configure these environment variables on the NiceGUI host:
+
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_USER_ID` (optional, defaults to `me`)
+- `GMAIL_POLL_SECONDS` (optional, defaults to 300 seconds)
+
+The OAuth token only needs the Gmail read-only scope. The intake worker searches recent PDF attachments, parses each PDF with the existing PRO-LAB parser, and compares the result against `Awaiting Lab` jobs.
+
+Automatic matching is conservative. It rewards exact client/property metadata and especially sample serial-number matches. If the best match is weak or too close to another job, MTAR does not attach the report automatically and instead surfaces it for review.
+
+The dashboard also includes a **Check Gmail Now** control for an immediate run. The background poll continues while the NiceGUI server is running.
