@@ -143,8 +143,48 @@ def _surface_rows_for_report(job: dict) -> list[dict]:
     return rows
 
 
+def _photo_entries(value) -> list[dict]:
+    """Normalize legacy single-photo inputs and new multi-photo entries."""
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        entries = []
+        for item in value:
+            if isinstance(item, dict):
+                entries.append(item)
+            else:
+                entries.append({"content": item, "caption": ""})
+        return entries
+    if isinstance(value, dict) and "content" in value:
+        return [value]
+    return [{"content": value, "caption": ""}]
+
+
+def _add_report_photo(doc: Document, entry: dict, width=Inches(3.4)) -> None:
+    content = entry.get("content")
+    if not content:
+        return
+    try:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.add_run().add_picture(content, width=width)
+        caption = (entry.get("caption") or "").strip()
+        if caption:
+            cp = make_tight(doc.add_paragraph())
+            cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = cp.add_run(caption)
+            run.italic = True
+            run.font.size = Pt(9)
+    except Exception:
+        pass
+
+
 def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -> BytesIO:
-    """Generate the V2 draft Word report from one structured job record."""
+    """Generate the V2 draft Word report from one structured job record.
+
+    Photos supports both the legacy single-file shape and the new list-of-photo
+    entries used by the persistent automation workflow.
+    """
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Arial"
@@ -181,11 +221,20 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
     run.font.color.rgb = RGBColor(24, 64, 88)
     make_tight(doc.add_paragraph())
 
-    if photos.get("property"):
+    property_photos = _photo_entries(photos.get("property"))
+    if property_photos:
+        cover_entry = property_photos[0]
         try:
             p = make_tight(doc.add_paragraph())
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.add_run().add_picture(photos["property"], width=Inches(5))
+            p.add_run().add_picture(cover_entry.get("content"), width=Inches(5))
+            cover_caption = (cover_entry.get("caption") or "").strip()
+            if cover_caption:
+                cp = make_tight(doc.add_paragraph())
+                cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                rr = cp.add_run(cover_caption)
+                rr.italic = True
+                rr.font.size = Pt(9)
         except Exception:
             pass
 
@@ -366,14 +415,9 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
             rr = p.add_run("Moisture Assessment: ")
             rr.bold = True
             p.add_run(area["moisture_notes"])
-        area_photo = photos.get(area["id"])
-        if area_photo:
-            try:
-                p = doc.add_paragraph()
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p.add_run().add_picture(area_photo, width=Inches(3))
-            except Exception:
-                pass
+        area_photos = _photo_entries(photos.get(area["id"]))
+        for entry in area_photos:
+            _add_report_photo(doc, entry)
 
     doc.add_page_break()
     lab_title = make_tight(doc.add_paragraph())
