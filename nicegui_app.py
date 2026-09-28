@@ -22,6 +22,7 @@ from workflow import (
 DB_PATH = Path(os.environ.get("MTAR_DB_PATH", "mtar_jobs.sqlite3"))
 DOCUMENT_ROOT = Path(os.environ.get("MTAR_DOCUMENT_ROOT", "mtar_data"))
 COC_TEMPLATE = Path(os.environ.get("MTAR_COC_TEMPLATE", "assets/BLANK_COC.pdf"))
+UPLOADED_COC_TEMPLATE = DOCUMENT_ROOT / "templates" / "BLANK_COC.pdf"
 
 store = SQLiteJobStore(DB_PATH)
 documents = FileDocumentStore(DOCUMENT_ROOT)
@@ -78,6 +79,14 @@ def sample_name(sample: dict) -> str:
     if sample.get("outdoor_control"):
         return sample.get("name") or "Outdoor Control"
     return sample.get("name") or sample.get("location") or "Unnamed Sample"
+
+
+def coc_template_path() -> Path | None:
+    if COC_TEMPLATE.exists():
+        return COC_TEMPLATE
+    if UPLOADED_COC_TEMPLATE.exists():
+        return UPLOADED_COC_TEMPLATE
+    return None
 
 
 def create_field_job() -> dict:
@@ -440,21 +449,32 @@ def job_page(job_id: str):
                 report_section.refresh()
                 ui.notify("Sample removed", type="positive")
 
+            async def upload_coc_template(e):
+                try:
+                    template_bytes = await e.file.read()
+                    UPLOADED_COC_TEMPLATE.parent.mkdir(parents=True, exist_ok=True)
+                    UPLOADED_COC_TEMPLATE.write_bytes(template_bytes)
+                except Exception as exc:
+                    ui.notify(f"Could not save COC template: {exc}", type="negative", multi_line=True)
+                    return
+                samples_section.refresh()
+                ui.notify("PRO-LAB COC template saved", type="positive")
+
             def generate_coc():
                 payload = build_coc_payload(job)
                 issues = validate_coc_payload(payload)
                 if issues:
                     ui.notify("COC needs: " + "; ".join(issues), type="negative", multi_line=True)
                     return
-                if not COC_TEMPLATE.exists():
+                template_path = coc_template_path()
+                if not template_path:
                     ui.notify(
-                        f"COC template not found at {COC_TEMPLATE}. Set MTAR_COC_TEMPLATE or add assets/BLANK_COC.pdf.",
+                        "Upload the blank PRO-LAB COC template before generating a COC.",
                         type="negative",
-                        multi_line=True,
                     )
                     return
                 try:
-                    output = fill_coc_pdf(COC_TEMPLATE.read_bytes(), payload)
+                    output = fill_coc_pdf(template_path.read_bytes(), payload)
                 except Exception as exc:
                     ui.notify(f"Could not generate COC: {exc}", type="negative", multi_line=True)
                     return
@@ -482,6 +502,19 @@ def job_page(job_id: str):
                             icon="science",
                             on_click=lambda: add_sample("Surface Sample"),
                         ).props("unelevated color=primary")
+
+                if not coc_template_path():
+                    with ui.card().classes("w-full p-4 mt-3 border border-amber-200 bg-amber-50 shadow-none"):
+                        ui.label("PRO-LAB COC template required").classes("font-semibold text-amber-800")
+                        ui.label(
+                            "Upload BLANK_COC.pdf once on this deployment. MTAR will reuse it for every job."
+                        ).classes("text-sm text-amber-700")
+                        ui.upload(
+                            label="Upload blank PRO-LAB COC",
+                            on_upload=upload_coc_template,
+                            auto_upload=True,
+                            max_files=1,
+                        ).props("accept=.pdf").classes("w-full mt-2")
 
                 area_options = {None: "Unassigned"}
                 area_options.update(
