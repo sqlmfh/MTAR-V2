@@ -1260,7 +1260,8 @@ ui.add_head_html(
       .q-field--outlined .q-field__control { border-radius: 10px; }
       .q-card { border-radius: 14px; }
     </style>
-    """
+    """,
+    shared=True,
 )
 
 
