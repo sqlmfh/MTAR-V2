@@ -46,3 +46,24 @@ git pull
 py -m pip install -r requirements.txt
 py -m streamlit run app.py
 ```
+
+
+## Automation foundation
+
+The `automation-foundation` branch starts the migration from a session-only Streamlit workflow to a persistent, UI-independent MTAR backend. It intentionally leaves the live Streamlit app on `main` unchanged.
+
+### Added in this foundation
+
+- `workflow.py` centralizes job statuses, allowed workflow transitions, and the final-report validation gate so Streamlit, NiceGUI, and future background workers can share the same rules.
+- `job_store.py` adds a SQLite persistence adapter for development/single-instance use while keeping the existing job dictionary model intact. The storage boundary is designed so PostgreSQL can replace SQLite later without rewriting report or lab logic.
+- `coc_builder.py` converts a job into a PRO-LAB Chain of Custody payload and fills the known AcroForm fields in the provided blank COC, including company/property data, sampling data, air/surface sample rows, and mold-analysis selections.
+- `tests/fixtures/scarlet_parsed_expected.json` captures the key structured results from the real Scarlet PRO-LAB report: outdoor control, Bedroom Closet air sample, and Coat Closet swab with an UNUSUAL determination and growth observed.
+- GitHub Actions runs the unit-test suite on this branch and pull requests.
+
+### Persistence note
+
+SQLite is only the first adapter. It is suitable for local development and a single app instance, but the production multi-user target remains PostgreSQL. Application code should use the store interface rather than opening SQLite directly.
+
+### COC note
+
+The supplied PRO-LAB COC was manually verified against `coc_builder.py`. Its visible State/ZIP positions do not match the field numbering implied by the existing default values, so the builder maps values by visible form position. Future template changes should be re-verified before deployment.
