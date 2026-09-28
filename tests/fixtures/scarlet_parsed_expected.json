@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "project_name": "SCARLET HARPER",
+    "report_number": "2030805",
+    "received_date": "September 23, 2026",
+    "report_date": "September 23, 2026",
+    "prepared_for": "MOLD TESTING & REMOVAL LLC",
+    "test_location": "16371 COUNTY ROAD 245, TERRELL, TX 75160"
+  },
+  "samples": [
+    {
+      "key": "2030805-1",
+      "page": 2,
+      "location": "OUTDOOR CONTROL SAMPLE",
+      "coc_line": "2030805-1",
+      "sample_type": "PRO-15",
+      "volume": "75.00L",
+      "serial_number": "Q2986725",
+      "collection_date": "Sep 22, 2026",
+      "analysis_date": "Sep 23, 2026",
+      "determination": "CONTROL",
+      "total_spores": 3179,
+      "fungi": {
+        "Alternaria": 53,
+        "Cercospora": 110,
+        "Cladosporium": 960,
+        "Curvularia": 53,
+        "Nigrospora": 53,
+        "Other Ascospores": 1200,
+        "Other Basidiospores": 110,
+        "Penicillium/Aspergillus": 530,
+        "Smuts, myxomycetes": 110
+      },
+      "background_debris": "Light",
+      "observations": "",
+      "is_air": true
+    },
+    {
+      "key": "2030805-2",
+      "page": 2,
+      "location": "BEDROOM CLOSET",
+      "coc_line": "2030805-2",
+      "sample_type": "PRO-15",
+      "volume": "75.00L",
+      "serial_number": "Q2986713",
+      "collection_date": "Sep 22, 2026",
+      "analysis_date": "Sep 23, 2026",
+      "determination": "NOT ELEVATED",
+      "total_spores": 273,
+      "fungi": {
+        "Cladosporium": 53,
+        "Other Ascospores": 110,
+        "Penicillium/Aspergillus": 110
+      },
+      "background_debris": "Light",
+      "observations": "",
+      "is_air": true
+    },
+    {
+      "key": "2030805-3",
+      "page": 2,
+      "location": "COAT CLOSET",
+      "coc_line": "2030805-3",
+      "sample_type": "SWAB",
+      "volume": "NA",
+      "serial_number": "CC",
+      "collection_date": "Sep 22, 2026",
+      "analysis_date": "Sep 23, 2026",
+      "determination": "UNUSUAL",
+      "total_spores": null,
+      "fungi": {
+        "Cladosporium": "Present",
+        "Curvularia": "Present",
+        "Epicoccum": "Present",
+        "Hyphae": "Present",
+        "Other Ascospores": "Present",
+        "Other Basidiospores": "Present",
+        "Penicillium/Aspergillus": "Present",
+        "Smuts, myxomycetes": "Present"
+      },
+      "background_debris": "Not Applicable",
+      "observations": "Presence of growth observed.",
+      "is_air": false
+    }
+  ],
+  "warnings": [],
+  "page_count": 9
+}
