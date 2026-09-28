@@ -23,8 +23,10 @@ from workflow import (
 )
 
 
-DB_PATH = Path(os.environ.get("MTAR_DB_PATH", "mtar_jobs.sqlite3"))
-DOCUMENT_ROOT = Path(os.environ.get("MTAR_DOCUMENT_ROOT", "mtar_data"))
+RAILWAY_VOLUME = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+DEFAULT_DATA_ROOT = Path(RAILWAY_VOLUME) if RAILWAY_VOLUME else Path(".")
+DB_PATH = Path(os.environ.get("MTAR_DB_PATH", str(DEFAULT_DATA_ROOT / "mtar_jobs.sqlite3")))
+DOCUMENT_ROOT = Path(os.environ.get("MTAR_DOCUMENT_ROOT", str(DEFAULT_DATA_ROOT / "mtar_data")))
 COC_TEMPLATE = Path(os.environ.get("MTAR_COC_TEMPLATE", "assets/BLANK_COC.pdf"))
 UPLOADED_COC_TEMPLATE = DOCUMENT_ROOT / "templates" / "BLANK_COC.pdf"
 
