@@ -14,9 +14,9 @@ class GmailIntakeTests(unittest.TestCase):
                 "test_location": "123 MAIN ST, DALLAS, TX 75201",
             },
             "samples": [
-                {"serial_number": "AIR001"},
-                {"serial_number": "AIR002"},
-                {"serial_number": "SWAB01"},
+                {"serial_number": "AIR001", "coc_line": "2030805-1"},
+                {"serial_number": "AIR002", "coc_line": "2030805-2"},
+                {"serial_number": "SWAB01", "coc_line": "2030805-3"},
             ],
         }
 
