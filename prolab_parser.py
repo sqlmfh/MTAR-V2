@@ -667,9 +667,9 @@ def build_draft_job_from_prolab(
             value = property_fields[key]
             job[key] = value.title() if key in ("address", "city") else value
 
-    report_date = _parse_lab_date(metadata.get("report_date", ""))
-    if report_date:
-        job["report_date"] = report_date
+    lab_report_date = _parse_lab_date(metadata.get("report_date", ""))
+    if lab_report_date:
+        job["lab_report_date"] = lab_report_date
 
     sample_dates = [
         _parse_lab_date(sample.get("collection_date", ""))
@@ -849,6 +849,23 @@ def build_automated_job_from_prolab(
         sample["location"] = area_name
 
     job["areas"] = areas
+    unusual_growth = any(
+        (not lab.get("is_air"))
+        and _upper(lab.get("determination", "")) == "UNUSUAL"
+        and (lab.get("fungi") or "GROWTH" in _upper(lab.get("observations", "")))
+        for lab in parsed.get("samples", [])
+    )
+    elevated_air = any(
+        lab.get("is_air") and _upper(lab.get("determination", "")) == "ELEVATED"
+        for lab in parsed.get("samples", [])
+    )
+    if unusual_growth or elevated_air:
+        job["suggested_report_outcome"] = "Mold remediation required"
+        job["suggested_report_outcome_reason"] = "Lab findings require licensed consultant review."
+    else:
+        job["suggested_report_outcome"] = "No significant mold contamination identified"
+        job["suggested_report_outcome_reason"] = "No elevated or unusual lab determination was detected; inspection findings still require review."
+
     job["automation_source"] = "PRO-LAB Gmail"
     job["automation_missing_fields"] = [
         "Indoor RH",
