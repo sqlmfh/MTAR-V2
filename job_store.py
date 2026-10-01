@@ -20,6 +20,10 @@ def new_job_id() -> str:
     return f"job_{uuid4().hex[:12]}"
 
 
+def _profile_key(value: str) -> str:
+    return " ".join(str(value or "").upper().split())
+
+
 def _json_default(value):
     if isinstance(value, (date, datetime)):
         return {"__mtar_type__": value.__class__.__name__, "value": value.isoformat()}
@@ -111,6 +115,134 @@ class SQLiteJobStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at DESC)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS customers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    name_key TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS properties (
+                    id TEXT PRIMARY KEY,
+                    customer_id TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    city TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT '',
+                    zip TEXT NOT NULL DEFAULT '',
+                    address_key TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(customer_id) REFERENCES customers(id)
+                )
+                """
+            )
+
+    def ensure_customer(self, name: str) -> dict:
+        """Return an existing customer profile or create one by normalized name."""
+        display = " ".join(str(name or "").split()).strip()
+        if not display:
+            raise ValueError("Customer name is required")
+        key = _profile_key(display)
+        now = utc_now_iso()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, name, created_at, updated_at FROM customers WHERE name_key = ?",
+                (key,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE customers SET name = ?, updated_at = ? WHERE id = ?",
+                    (display, now, row["id"]),
+                )
+                return {
+                    "id": row["id"],
+                    "name": display,
+                    "created_at": row["created_at"],
+                    "updated_at": now,
+                }
+
+            customer_id = f"customer_{uuid4().hex[:12]}"
+            conn.execute(
+                """
+                INSERT INTO customers (id, name, name_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (customer_id, display, key, now, now),
+            )
+        return {"id": customer_id, "name": display, "created_at": now, "updated_at": now}
+
+    def ensure_property(
+        self,
+        customer_id: str,
+        address: str,
+        city: str = "",
+        state: str = "",
+        zip_code: str = "",
+    ) -> dict:
+        """Return an existing property or create one by normalized address + ZIP."""
+        address = " ".join(str(address or "").split()).strip()
+        if not address:
+            raise ValueError("Property address is required")
+        city = " ".join(str(city or "").split()).strip()
+        state = " ".join(str(state or "").split()).strip()
+        zip_code = " ".join(str(zip_code or "").split()).strip()
+        key = _profile_key(f"{address}|{city}|{state}|{zip_code}")
+        now = utc_now_iso()
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, customer_id, address, city, state, zip, created_at, updated_at
+                FROM properties WHERE address_key = ?
+                """,
+                (key,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    UPDATE properties
+                    SET customer_id = ?, address = ?, city = ?, state = ?, zip = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (customer_id, address, city, state, zip_code, now, row["id"]),
+                )
+                return {
+                    "id": row["id"],
+                    "customer_id": customer_id,
+                    "address": address,
+                    "city": city,
+                    "state": state,
+                    "zip": zip_code,
+                    "created_at": row["created_at"],
+                    "updated_at": now,
+                }
+
+            property_id = f"property_{uuid4().hex[:12]}"
+            conn.execute(
+                """
+                INSERT INTO properties (
+                    id, customer_id, address, city, state, zip, address_key,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (property_id, customer_id, address, city, state, zip_code, key, now, now),
+            )
+        return {
+            "id": property_id,
+            "customer_id": customer_id,
+            "address": address,
+            "city": city,
+            "state": state,
+            "zip": zip_code,
+            "created_at": now,
+            "updated_at": now,
+        }
 
     def save(self, job: dict) -> dict:
         stored = prepare_persistent_job(job, job_id=job.get("id"))
