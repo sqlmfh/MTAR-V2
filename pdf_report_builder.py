@@ -389,8 +389,10 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
         _header(c)
         y = PAGE_H - 165
         y = _section_title(c, area.get("name", "Inspection Area"), y, 15)
+        if area.get("lab_summary"):
+            y = _paragraph(c, area["lab_summary"], y, size=10)
         if area.get("description"):
-            y = _paragraph(c, area["description"], y, size=10)
+            y = _paragraph(c, f"Visual Observations: {area['description']}", y, size=10)
         y -= 8
         c.setFillColor(TEXT)
         c.setFont("Helvetica-Bold", 12)
