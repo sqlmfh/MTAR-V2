@@ -138,7 +138,7 @@ def save_job(job: dict, *, notify: bool = True) -> dict:
     job.clear()
     job.update(saved)
     if notify:
-        ui.notify("Job saved", type="positive")
+        ui.notify("Assessment saved", type="positive")
     return job
 
 
@@ -350,7 +350,7 @@ def empty_state(title: str, body: str, action_text: str | None = None, action=No
 def dashboard_page():
     page_shell(
         "MTAR Dashboard",
-        "Persistent job workflow for inspections, samples, lab results, and final reports.",
+        "Automated assessment workflow from inspection and PRO-LAB results to customer report.",
     )
 
     jobs = store.list(limit=200)
@@ -438,13 +438,13 @@ def dashboard_page():
             active = [j for j in jobs if j.status != "closed"]
             ui.label(f"{len(active)} Active").classes("px-3 py-1 rounded-full bg-blue-50 text-blue-700 font-medium")
             ui.label(f"{len(jobs)} Total").classes("px-3 py-1 rounded-full bg-slate-100 text-slate-700 font-medium")
-        ui.button("New Job", icon="add", on_click=create_job).props("unelevated color=primary")
+        ui.button("New Assessment", icon="add", on_click=create_job).props("unelevated color=primary")
 
     if not jobs:
         empty_state(
-            "No jobs yet",
-            "Create the first assessment job. It will be stored persistently instead of living only in browser session state.",
-            "Create First Job",
+            "No assessments yet",
+            "Create the first assessment manually, or let a PRO-LAB Gmail result create one automatically.",
+            "Create First Assessment",
             create_job,
         )
         return
@@ -471,14 +471,14 @@ def dashboard_page():
 def job_page(job_id: str):
     job = store.get(job_id)
     if not job:
-        page_shell("Job not found")
-        ui.label("This job no longer exists or the link is invalid.").classes("text-red-600")
+        page_shell("Assessment not found")
+        ui.label("This assessment no longer exists or the link is invalid.").classes("text-red-600")
         ui.button("Back to Dashboard", on_click=lambda: ui.navigate.to("/"))
         return
 
     page_shell(
         job.get("client_name") or "New Assessment",
-        f"Job {job.get('id')} · {job.get('address') or 'Property address pending'}",
+        f"Assessment {job.get('id')} · {job.get('address') or 'Property address pending'}",
     )
 
     def persist():
