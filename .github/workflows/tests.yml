@@ -22,3 +22,27 @@ jobs:
         run: python -m py_compile nicegui_app.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py gmail_intake.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+      - name: Generate Scarlet PDF fixture
+        run: |
+          mkdir -p artifacts
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from job_store import new_persistent_job
+          from prolab_parser import build_automated_job_from_prolab
+          from report_builder import MOLD_DESCRIPTIONS
+          from pdf_report_builder import create_customer_pdf
+
+          parsed = json.loads(Path("tests/fixtures/scarlet_parsed_expected.json").read_text())
+          job = new_persistent_job()
+          build_automated_job_from_prolab(job, parsed, MOLD_DESCRIPTIONS.keys())
+          job["report_outcome"] = "Mold remediation required"
+          pdf = create_customer_pdf(job, {})
+          Path("artifacts/Scarlet_Automation_Preview.pdf").write_bytes(pdf.getvalue())
+          PY
+      - name: Upload Scarlet PDF fixture
+        uses: actions/upload-artifact@v4
+        with:
+          name: scarlet-automation-preview
+          path: artifacts/Scarlet_Automation_Preview.pdf
