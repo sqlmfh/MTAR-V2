@@ -87,6 +87,23 @@ def job_match_score(parsed: dict, job: dict) -> tuple[int, list[str]]:
     return score, reasons
 
 
+def is_confident_prolab_result(parsed: dict) -> bool:
+    """Return True when parsed metadata and sample COC lines agree on a report."""
+    metadata = parsed.get("metadata", {})
+    report_number = _norm(metadata.get("report_number"))
+    samples = parsed.get("samples", [])
+    if not report_number or not samples:
+        return False
+
+    matching_coc_lines = 0
+    for sample in samples:
+        coc_line = _norm(sample.get("coc_line"))
+        if coc_line == report_number or coc_line.startswith(report_number + "-"):
+            matching_coc_lines += 1
+
+    return matching_coc_lines >= 1
+
+
 def rank_jobs(parsed: dict, jobs: Iterable[dict]) -> list[dict]:
     ranked = []
     for job in jobs:
