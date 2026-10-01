@@ -165,7 +165,7 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
             "outdoor": batch(3, "sampling"),
             "environment": [photo()],
             areas["Coat Closet"]["id"]: (
-                batch(3, "sampling") + batch(12, "inspection") + batch(4, "thermal")
+                batch(3, "sampling") + batch(18, "inspection") + batch(4, "thermal")
             ),
             areas["Bedroom Closet"]["id"]: (
                 batch(2, "sampling") + batch(6, "inspection") + batch(4, "thermal")
