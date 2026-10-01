@@ -260,7 +260,7 @@ def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
 
 def _draw_samples_page(c: canvas.Canvas, job: dict, page_no: int):
     _header(c)
-    y = PAGE_H - 180
+    y = PAGE_H - 110
     y = _section_title(c, "Samples Taken:", y, 15)
     indoor_num = 0
     for sample in job.get("samples", []):
@@ -277,7 +277,7 @@ def _draw_samples_page(c: canvas.Canvas, job: dict, page_no: int):
 
 def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
     _header(c)
-    y = PAGE_H - 170
+    y = PAGE_H - 95
     y = _paragraph(c, "State Licensed Mold Assessment Consultant:", y, font="Helvetica-Bold", size=10)
     y = _paragraph(c, "Azeem Iqbal - TDLR MAC #2189", y, size=10)
     y -= 8
@@ -333,7 +333,7 @@ def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
 
 def _draw_outdoor_page(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
     _header(c)
-    y = PAGE_H - 165
+    y = PAGE_H - 105
     y = _section_title(c, "Outdoor Control Sample", y, 15)
     y = _paragraph(c, "An air sample is taken outside to serve as a baseline for all other air samples to be compared against.", y, size=10)
     y -= 12
@@ -387,7 +387,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
 
         page_no += 1
         _header(c)
-        y = PAGE_H - 165
+        y = PAGE_H - 105
         y = _section_title(c, area.get("name", "Inspection Area"), y, 15)
         if area.get("lab_summary"):
             y = _paragraph(c, area["lab_summary"], y, size=10)
@@ -419,7 +419,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
             c.showPage()
             page_no += 1
             _header(c)
-            y = PAGE_H - 145
+            y = PAGE_H - 95
             y, used = _photo_grid(c, remaining, y, cols=3, cell_h=140, max_rows=4)
             remaining = remaining[used:]
             _footer(c, page_no)
@@ -428,7 +428,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
             c.showPage()
             page_no += 1
             _header(c)
-            y = PAGE_H - 165
+            y = PAGE_H - 105
             y = _paragraph(
                 c,
                 area.get("thermal_notes") or "Thermal Imaging: Consultant review required before final release.",
@@ -537,7 +537,7 @@ def _draw_mold_entry(
 
 def _draw_lab_page(c: canvas.Canvas, job: dict, page_no: int):
     _header(c)
-    y = PAGE_H - 165
+    y = PAGE_H - 105
     y = _section_title(c, "Laboratory Results Analysis", y, 15)
     y = _paragraph(c, "Samples were submitted to PRO-LAB (an accredited laboratory) for analysis. The following summarizes the findings compared to the outdoor control sample.", y, size=10)
     y -= 10
@@ -575,7 +575,7 @@ def _draw_lab_page(c: canvas.Canvas, job: dict, page_no: int):
 
 def _draw_conclusions(c: canvas.Canvas, job: dict, page_no: int):
     _header(c)
-    y = PAGE_H - 165
+    y = PAGE_H - 105
     y = _section_title(c, "Conclusions", y, 15)
     y = _paragraph(c, "Based on the visual inspection, moisture readings, and laboratory results, the following conclusions are made:", y, size=10)
     y -= 8
@@ -610,7 +610,7 @@ def _draw_conclusions(c: canvas.Canvas, job: dict, page_no: int):
 
 def _draw_terms(c: canvas.Canvas, page_no: int):
     _header(c)
-    y = PAGE_H - 165
+    y = PAGE_H - 105
     y = _section_title(c, "Terms and Conditions", y, 15)
     terms = [
         ("Inspection Limitation", "This inspection and the information set forth in the report is provided solely for the purpose of verifying that certain structural or physical characteristics exist at the Location Address listed. The undersigned and company representative does not make a health or safety certification or warranty, express or implied, of any kind."),
