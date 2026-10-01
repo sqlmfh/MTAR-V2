@@ -15,6 +15,7 @@ def new_area(name: str = "") -> dict:
         "finding": "Needs consultant review",
         "description": "",
         "moisture_notes": "",
+        "thermal_notes": "",
     }
 
 
@@ -127,6 +128,27 @@ def validate_job(job: dict, lab_pdf_present: bool) -> list[str]:
         missing.append("At least one inspection area")
     if job.get("humidity") is None:
         missing.append("Indoor RH")
+
+    named_areas = [a for a in job.get("areas", []) if a.get("name", "").strip()]
+    for area in named_areas:
+        if not str(area.get("moisture_notes", "")).strip():
+            missing.append(f"Moisture assessment for {area['name']}")
+
+    photos = job.get("photos", [])
+    if not any(photo.get("role") == "property" for photo in photos):
+        missing.append("Property exterior photo")
+
+    for area in named_areas:
+        if not any(
+            photo.get("role") == "area" and photo.get("area_id") == area.get("id")
+            for photo in photos
+        ):
+            missing.append(f"Inspection photos for {area['name']}")
+
+    if any(sample.get("outdoor_control") for sample in job.get("samples", [])):
+        if not any(photo.get("role") == "outdoor" for photo in photos):
+            missing.append("Outdoor control sampling photo")
+
     unassigned = [
         s for s in job.get("samples", [])
         if not s.get("outdoor_control") and not s.get("area_id")
