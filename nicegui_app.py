@@ -13,7 +13,7 @@ from document_store import FileDocumentStore
 from gmail_intake import GmailApiClient, confident_job_match, inspect_attachment
 from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
-from prolab_parser import apply_prolab_results, parse_prolab_pdf, suggested_mapping
+from prolab_parser import apply_prolab_results, build_automated_job_from_prolab, parse_prolab_pdf, suggested_mapping
 from photo_service import normalize_report_photo, photo_data_url
 from report_builder import MOLD_DESCRIPTIONS, create_report
 from workflow import (
@@ -38,6 +38,7 @@ LAST_GMAIL_CHECK = {
     "status": "not_run",
     "checked": 0,
     "imported": 0,
+    "created": 0,
     "ambiguous": 0,
     "ignored": 0,
 }
@@ -140,12 +141,19 @@ def save_job(job: dict, *, notify: bool = True) -> dict:
 
 
 def run_gmail_intake() -> dict:
-    """Check Gmail once and auto-attach only high-confidence PRO-LAB results."""
+    """Check Gmail once and turn valid PRO-LAB PDFs into MTAR assessments.
+
+    High-confidence matches attach to an existing Awaiting Lab assessment.
+    Otherwise, MTAR creates a new assessment directly from the lab report so
+    Gmail can be the trigger for the workflow rather than requiring a record to
+    exist first.
+    """
     if not gmail_client.configured():
         return {
             "configured": False,
             "checked": 0,
             "imported": 0,
+            "created": 0,
             "ambiguous": [],
             "ignored": 0,
             "skipped": 0,
@@ -164,6 +172,7 @@ def run_gmail_intake() -> dict:
         "configured": True,
         "checked": 0,
         "imported": 0,
+        "created": 0,
         "ambiguous": [],
         "ignored": 0,
         "skipped": 0,
@@ -184,37 +193,46 @@ def run_gmail_intake() -> dict:
             continue
 
         match = confident_job_match(parsed, awaiting_jobs)
-        if not match:
-            metadata = parsed.get("metadata", {})
-            result["ambiguous"].append(
-                {
-                    "message_id": attachment.message_id,
-                    "subject": attachment.subject,
-                    "filename": attachment.filename,
-                    "project_name": metadata.get("project_name", ""),
-                    "report_number": metadata.get("report_number", ""),
-                }
-            )
-            continue
+        target = None
+        created_from_gmail = False
+        match_score = 0
+        match_reasons = ["created from PRO-LAB report"]
 
-        target = next((job for job in awaiting_jobs if job.get("id") == match["job_id"]), None)
-        if not target:
-            result["ambiguous"].append(
-                {
-                    "message_id": attachment.message_id,
-                    "subject": attachment.subject,
-                    "filename": attachment.filename,
-                    "project_name": parsed.get("metadata", {}).get("project_name", ""),
-                    "report_number": parsed.get("metadata", {}).get("report_number", ""),
-                }
+        if match:
+            target = next((job for job in awaiting_jobs if job.get("id") == match["job_id"]), None)
+            if target:
+                match_score = match["score"]
+                match_reasons = match["reasons"]
+
+        if target is None:
+            target = new_persistent_job()
+            mapping = build_automated_job_from_prolab(
+                target,
+                parsed,
+                MOLD_DESCRIPTIONS.keys(),
             )
-            continue
+            target["lab_mapping"] = mapping
+            target["status"] = "report_review"
+            created_from_gmail = True
+            result["created"] += 1
+        else:
+            mapping = suggested_mapping(parsed, target)
+            target["lab_mapping"] = mapping
+            parsed_keys = {sample.get("key") for sample in parsed.get("samples", [])}
+            mapped_keys = {key for key, value in mapping.items() if value}
+            if parsed_keys and parsed_keys == mapped_keys and len(set(mapping.values())) == len(mapping):
+                apply_prolab_results(target, parsed, mapping, MOLD_DESCRIPTIONS.keys())
+                target["status"] = "report_review"
+            else:
+                try:
+                    target = transition_job(target, "lab_received")
+                except ValueError:
+                    target["status"] = "lab_received"
 
         filename = _safe_filename(attachment.filename, "PROLAB_Result.pdf")
         documents.save_bytes(target["id"], "lab", filename, attachment.content)
         target["lab_filename"] = filename
         target["lab_parsed"] = parsed
-        target["lab_mapping"] = suggested_mapping(parsed, target)
         target.setdefault("gmail_message_ids", []).append(attachment.message_id)
         target["gmail_source"] = {
             "message_id": attachment.message_id,
@@ -222,14 +240,25 @@ def run_gmail_intake() -> dict:
             "sender": attachment.sender,
             "subject": attachment.subject,
             "filename": filename,
-            "match_score": match["score"],
-            "match_reasons": match["reasons"],
+            "match_score": match_score,
+            "match_reasons": match_reasons,
+            "created_assessment": created_from_gmail,
         }
 
+        # Generate a review draft automatically. The draft can contain explicit
+        # review-required placeholders for inspection facts that are not
+        # available in the lab PDF (RH, moisture notes, photos, final outcome).
         try:
-            target = transition_job(target, "lab_received")
-        except ValueError:
-            pass
+            report = create_report(target, {}, attachment.content)
+            draft_filename = (
+                f"{_safe_filename(target.get('client_name', ''), 'Client')}"
+                "_Mold_Assessment_AUTO_DRAFT.docx"
+            )
+            documents.save_bytes(target["id"], "reports", draft_filename, report.getvalue())
+            target["latest_draft_filename"] = draft_filename
+        except Exception as exc:
+            target["automatic_draft_error"] = str(exc)
+
         store.save(target)
         processed_ids.add(attachment.message_id)
         awaiting_jobs = [job for job in awaiting_jobs if job.get("id") != target.get("id")]
@@ -249,6 +278,7 @@ async def gmail_monitor():
                     "status": "ok",
                     "checked": result.get("checked", 0),
                     "imported": result.get("imported", 0),
+                    "created": result.get("created", 0),
                     "ambiguous": len(result.get("ambiguous", [])),
                     "ignored": result.get("ignored", 0),
                 }
@@ -258,6 +288,7 @@ async def gmail_monitor():
                     "error": str(exc),
                     "checked": 0,
                     "imported": 0,
+                    "created": 0,
                     "ambiguous": 0,
                     "ignored": 0,
                 }
@@ -320,6 +351,7 @@ def dashboard_page():
                             ui.label(
                                 f"Last check: {LAST_GMAIL_CHECK.get('checked', 0)} PDFs · "
                                 f"{LAST_GMAIL_CHECK.get('imported', 0)} imported · "
+                                f"{LAST_GMAIL_CHECK.get('created', 0)} created · "
                                 f"{LAST_GMAIL_CHECK.get('ambiguous', 0)} need review"
                             ).classes("text-xs text-slate-400")
                         elif LAST_GMAIL_CHECK.get("status") == "error":
@@ -346,6 +378,7 @@ def dashboard_page():
                         "status": "ok",
                         "checked": result.get("checked", 0),
                         "imported": result.get("imported", 0),
+                        "created": result.get("created", 0),
                         "ambiguous": len(result.get("ambiguous", [])),
                         "ignored": result.get("ignored", 0),
                     }
@@ -353,6 +386,7 @@ def dashboard_page():
                     summary = (
                         f"Checked {result['checked']} PDF attachment(s); "
                         f"imported {result['imported']}; "
+                        f"created {result.get('created', 0)} assessment(s); "
                         f"needs review {len(result['ambiguous'])}; "
                         f"ignored {result['ignored']}."
                     )
