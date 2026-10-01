@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile NiceGUI app
-        run: python -m py_compile nicegui_app.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py gmail_intake.py
+        run: python -m py_compile nicegui_app.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py pdf_report_builder.py gmail_intake.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
@@ -28,7 +28,9 @@ jobs:
           mkdir -p artifacts
           python - <<'PY'
           import json
+          from io import BytesIO
           from pathlib import Path
+          from PIL import Image
           from job_store import new_persistent_job
           from prolab_parser import build_automated_job_from_prolab
           from report_builder import MOLD_DESCRIPTIONS
@@ -38,7 +40,53 @@ jobs:
           job = new_persistent_job()
           build_automated_job_from_prolab(job, parsed, MOLD_DESCRIPTIONS.keys())
           job["report_outcome"] = "Mold remediation required"
-          pdf = create_customer_pdf(job, {})
+          job["humidity"] = 44
+
+          areas = {area["name"]: area for area in job["areas"]}
+          moisture = (
+              "All surfaces were dry during the time of inspection. "
+              "All materials were below 14% moisture content."
+          )
+          thermal = (
+              "Thermal Imaging: No abnormalities were observed. "
+              "All temperature variations were consistent with normal conditions."
+          )
+          for area in areas.values():
+              area["moisture_notes"] = moisture
+              area["thermal_notes"] = thermal
+
+          def photo(label):
+              buf = BytesIO()
+              image = Image.new("RGB", (640, 480), "white")
+              image.save(buf, format="JPEG")
+              buf.seek(0)
+              return {"content": buf, "caption": label}
+
+          def batch(prefix, count, kind):
+              items = []
+              for index in range(1, count + 1):
+                  item = photo(f"{prefix} {index}")
+                  item["kind"] = kind
+                  items.append(item)
+              return items
+
+          photos = {
+              "property": [photo("Property Exterior")],
+              "outdoor": batch("Outdoor Sampling", 3, "sampling"),
+              "environment": [photo("Indoor RH")],
+              areas["Coat Closet"]["id"]: (
+                  batch("Coat Sampling", 3, "sampling")
+                  + batch("Coat Inspection", 12, "inspection")
+                  + batch("Coat Thermal", 4, "thermal")
+              ),
+              areas["Bedroom Closet"]["id"]: (
+                  batch("Bedroom Sampling", 2, "sampling")
+                  + batch("Bedroom Inspection", 6, "inspection")
+                  + batch("Bedroom Thermal", 4, "thermal")
+              ),
+          }
+
+          pdf = create_customer_pdf(job, photos)
           Path("artifacts/Scarlet_Automation_Preview.pdf").write_bytes(pdf.getvalue())
           PY
       - name: Upload Scarlet PDF fixture
