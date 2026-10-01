@@ -739,3 +739,121 @@ def build_draft_job_from_prolab(
     apply_prolab_results(job, parsed, mapping, supported_molds)
     return mapping
 
+
+
+def _automated_area_finding(lab: dict) -> str:
+    """Create a conservative preliminary area finding from lab facts only."""
+    determination = _upper(lab.get("determination", ""))
+    observations = _upper(lab.get("observations", ""))
+
+    if not lab.get("is_air") and determination == "UNUSUAL":
+        if lab.get("fungi") or "GROWTH" in observations:
+            return "Active mold growth confirmed"
+        return "Surface sample unusual"
+
+    if lab.get("is_air") and determination == "ELEVATED":
+        return "Elevated spore counts"
+
+    if lab.get("is_air") and determination in {"NOT ELEVATED", "CONTROL"}:
+        return "Mold levels not elevated" if determination == "NOT ELEVATED" else "Outdoor control"
+
+    return "Needs consultant review"
+
+
+def _automated_sample_summary(lab: dict) -> str:
+    determination = _upper(lab.get("determination", ""))
+    if lab.get("is_air"):
+        if determination == "NOT ELEVATED":
+            return (
+                "Air Sample: Mold levels indoors were lower than mold levels observed "
+                "in Outdoor Control Sample. Determination is NOT ELEVATED."
+            )
+        if determination == "ELEVATED":
+            return (
+                "Air Sample: Mold levels were elevated compared with the outdoor control "
+                "sample. Determination is ELEVATED."
+            )
+        return f"Air Sample: Laboratory determination is {determination or 'pending review'}."
+
+    fungi = [name for name, value in lab.get("fungi", {}).items() if value]
+    if fungi:
+        joined = ", ".join(fungi)
+        return (
+            f"Swab Sample: Sample returned positive for {joined} growth. "
+            f"Determination is {determination or 'pending review'}."
+        )
+    return f"Surface Sample: Laboratory determination is {determination or 'pending review'}."
+
+
+def build_automated_job_from_prolab(
+    job: dict,
+    parsed: dict,
+    supported_molds: Iterable[str],
+) -> dict[str, str]:
+    """Create a review-ready assessment directly from a PRO-LAB report.
+
+    Unlike the manual draft builder, this automation-oriented builder creates
+    inspection-area placeholders from lab locations and assigns each
+    non-control sample to its matching area. The area findings and narratives
+    are explicitly preliminary lab-derived facts; moisture observations,
+    photos, indoor RH, and the licensed consultant's final report outcome
+    remain review items.
+    """
+    from models import new_area
+
+    mapping = build_draft_job_from_prolab(job, parsed, supported_molds)
+    samples_by_id = {sample["id"]: sample for sample in job.get("samples", [])}
+
+    areas: list[dict] = []
+    areas_by_name: dict[str, dict] = {}
+    review_index = 0
+
+    for lab in parsed.get("samples", []):
+        sample_id = mapping.get(lab.get("key", ""))
+        sample = samples_by_id.get(sample_id or "")
+        if not sample:
+            continue
+
+        serial = _norm(lab.get("serial_number", ""))
+        if serial:
+            sample["serial_number"] = serial
+
+        media = _upper(lab.get("sample_type", ""))
+        sample["sample_type_code"] = "P15" if lab.get("is_air") else (media or "SWAB")
+
+        if lab.get("is_air"):
+            volume_match = re.search(r"(\\d+(?:\\.\\d+)?)", str(lab.get("volume", "")))
+            volume_liters = float(volume_match.group(1)) if volume_match else None
+            sample["flow_rate_liters"] = 15
+            if volume_liters:
+                minutes = volume_liters / 15.0
+                sample["flow_rate_minutes"] = int(minutes) if minutes.is_integer() else minutes
+                sample["sample_volume_liters"] = volume_liters
+
+        if sample.get("outdoor_control"):
+            continue
+
+        review_index += 1
+        area_name = _review_area_name(lab.get("location", ""), review_index)
+        key = _upper(area_name)
+        area = areas_by_name.get(key)
+        if area is None:
+            area = new_area(area_name)
+            area["finding"] = _automated_area_finding(lab)
+            area["description"] = _automated_sample_summary(lab)
+            area["source"] = "PRO-LAB"
+            area["source_lab_key"] = lab.get("key", "")
+            areas.append(area)
+            areas_by_name[key] = area
+        sample["area_id"] = area["id"]
+        sample["location"] = area_name
+
+    job["areas"] = areas
+    job["automation_source"] = "PRO-LAB Gmail"
+    job["automation_missing_fields"] = [
+        "Indoor RH",
+        "Inspection photos",
+        "Moisture assessment",
+        "Licensed consultant report outcome",
+    ]
+    return mapping
