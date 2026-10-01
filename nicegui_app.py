@@ -908,7 +908,7 @@ def job_page(job_id: str):
                 sequence = len(photo_records()) + 1
                 source_name = _safe_filename(e.file.name, f"photo_{sequence}.jpg")
                 stem = Path(source_name).stem
-                prefix = "property" if role == "property" else f"area_{area_id}"
+                prefix = role if role in {"property", "outdoor", "environment"} else f"area_{area_id}"
                 filename = f"{prefix}_{token}_{stem}.jpg"
                 documents.save_bytes(job["id"], "photos", filename, normalized)
 
@@ -977,6 +977,38 @@ def job_page(job_id: str):
                                             on_click=lambda photo_id=photo["id"]: delete_photo(photo_id),
                                         ).props("flat round color=negative")
 
+                outdoor_photos = [p for p in photo_records() if p.get("role") == "outdoor"]
+                environment_photos = [p for p in photo_records() if p.get("role") == "environment"]
+
+                with ui.grid(columns=2).classes("w-full gap-4 mt-4"):
+                    with ui.card().classes("w-full p-5 shadow-sm border border-slate-200"):
+                        ui.label("Outdoor Control Sampling").classes("text-lg font-semibold text-slate-800")
+                        ui.label(
+                            "Upload pump/cassette/control photos for the Outdoor Control Sample page."
+                        ).classes("text-sm text-slate-500")
+                        ui.upload(
+                            label="Add Outdoor Control Photos",
+                            on_upload=lambda e: handle_photo_upload(e, "outdoor", kind="sampling"),
+                            auto_upload=True,
+                            multiple=True,
+                        ).props("accept=image/jpeg,image/png,image/webp").classes("w-full mt-3")
+                        if outdoor_photos:
+                            ui.label(f"{len(outdoor_photos)} photo(s) uploaded").classes("text-xs text-slate-500 mt-2")
+
+                    with ui.card().classes("w-full p-5 shadow-sm border border-slate-200"):
+                        ui.label("Environmental / RH Photo").classes("text-lg font-semibold text-slate-800")
+                        ui.label(
+                            "Upload the indoor RH / environmental-condition meter photo used on the Outdoor Control page."
+                        ).classes("text-sm text-slate-500")
+                        ui.upload(
+                            label="Add Environmental Photo",
+                            on_upload=lambda e: handle_photo_upload(e, "environment", kind="environment"),
+                            auto_upload=True,
+                            max_files=1,
+                        ).props("accept=image/jpeg,image/png,image/webp").classes("w-full mt-3")
+                        if environment_photos:
+                            ui.label(f"{len(environment_photos)} photo(s) uploaded").classes("text-xs text-slate-500 mt-2")
+
                 ui.label("Inspection Area Photos").classes("text-lg font-semibold text-slate-800 mt-6")
                 areas = job.get("areas", [])
                 if not areas:
@@ -1011,6 +1043,17 @@ def job_page(job_id: str):
                                             value=photo.get("caption", ""),
                                             on_change=lambda e, target=photo: target.__setitem__("caption", e.value),
                                         ).props("outlined dense").classes("w-full mt-2")
+                                        if photo.get("role") == "area":
+                                            ui.select(
+                                                {
+                                                    "sampling": "Sampling",
+                                                    "inspection": "Inspection / Moisture",
+                                                    "thermal": "Thermal Imaging",
+                                                },
+                                                value=photo.get("kind", "inspection"),
+                                                label="Photo Type",
+                                                on_change=lambda e, target=photo: target.__setitem__("kind", e.value),
+                                            ).props("outlined dense").classes("w-full mt-2")
                                         with ui.row().classes("w-full justify-end"):
                                             ui.button(
                                                 icon="delete",
@@ -1019,7 +1062,7 @@ def job_page(job_id: str):
 
                 with ui.row().classes("w-full justify-end mt-4"):
                     ui.button(
-                        "Save Photo Captions",
+                        "Save Photo Details",
                         icon="save",
                         on_click=lambda: save_job(job),
                     ).props("unelevated color=primary")
