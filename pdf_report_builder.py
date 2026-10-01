@@ -212,6 +212,13 @@ def _sample_label(sample: dict | None) -> str:
     return sample.get("lab_coc_line") or sample.get("name") or ""
 
 
+def _letter_finding(area: dict) -> str:
+    finding = _safe_text(area.get("finding", ""))
+    if finding == "Mold levels not elevated":
+        return "No mold detected"
+    return finding
+
+
 def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
     _cover_header(c)
     c.setFillColor(NAVY)
@@ -294,7 +301,7 @@ def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
     if outcome == "Mold remediation required":
         y = _paragraph(c, "Based on the laboratory results and visual inspection, active mold growth was confirmed in the following areas:", y, size=10)
         for area in job.get("areas", []):
-            y = _paragraph(c, f"- {area.get('name', '')} - {area.get('finding', '')}", y, x=LEFT + 12, size=10)
+            y = _paragraph(c, f"- {area.get('name', '')} - {_letter_finding(area)}", y, x=LEFT + 12, size=10)
         y -= 5
         y = _paragraph(
             c,
@@ -422,7 +429,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
             y = PAGE_H - 165
             y = _paragraph(
                 c,
-                area.get("thermal_notes") or "Thermal Imaging: No abnormalities were observed. All temperature variations were consistent with normal conditions.",
+                area.get("thermal_notes") or "Thermal Imaging: Consultant review required before final release.",
                 y,
                 size=10,
             )
