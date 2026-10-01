@@ -59,6 +59,7 @@ FINDING_OPTIONS = [
     "Needs consultant review",
     "Active mold growth confirmed",
     "Elevated spore counts",
+    "Mold levels not elevated",
     "Visual mold present",
     "No mold detected",
 ]
@@ -1344,6 +1345,15 @@ def job_page(job_id: str):
             @ui.refreshable
             def report_section():
                 ui.label("Report Review").classes("text-xl font-semibold text-slate-800")
+                suggestion = job.get("suggested_report_outcome")
+                if suggestion:
+                    with ui.card().classes("w-full max-w-xl p-3 mb-3 bg-blue-50 border border-blue-200 shadow-none"):
+                        ui.label("Lab-derived suggestion").classes("font-semibold text-blue-800")
+                        ui.label(suggestion).classes("text-blue-900")
+                        ui.label(
+                            job.get("suggested_report_outcome_reason", "Licensed consultant review required.")
+                        ).classes("text-xs text-blue-700")
+
                 ui.select(
                     REPORT_OUTCOMES,
                     value=job.get("report_outcome", "Pending consultant review"),
