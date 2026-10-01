@@ -822,7 +822,7 @@ def build_automated_job_from_prolab(
         sample["sample_type_code"] = "P15" if lab.get("is_air") else (media or "SWAB")
 
         if lab.get("is_air"):
-            volume_match = re.search(r"(\\d+(?:\\.\\d+)?)", str(lab.get("volume", "")))
+            volume_match = re.search(r"(\d+(?:\.\d+)?)", str(lab.get("volume", "")))
             volume_liters = float(volume_match.group(1)) if volume_match else None
             sample["flow_rate_liters"] = 15
             if volume_liters:
