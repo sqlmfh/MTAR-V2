@@ -7,6 +7,8 @@ import unittest
 from job_store import new_persistent_job
 from prolab_parser import build_automated_job_from_prolab
 from report_builder import MOLD_DESCRIPTIONS, create_report
+from pdf_report_builder import create_customer_pdf
+import fitz
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "scarlet_parsed_expected.json"
@@ -57,6 +59,23 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         self.assertEqual(coat["area_id"], areas["Coat Closet"]["id"])
         self.assertEqual(coat["lab_determination"], "UNUSUAL")
         self.assertIn("Hyphae", coat["lab_fungi"])
+
+    def test_lab_only_assessment_can_generate_customer_pdf(self):
+        job = new_persistent_job()
+        build_automated_job_from_prolab(job, self.parsed, MOLD_DESCRIPTIONS.keys())
+
+        pdf = create_customer_pdf(job, {})
+        output = pdf.getvalue()
+
+        self.assertTrue(output.startswith(b"%PDF"))
+        doc = fitz.open(stream=output, filetype="pdf")
+        try:
+            self.assertGreaterEqual(len(doc), 8)
+            first_page = doc[0].get_text("text")
+            self.assertIn("MOLD ASSESSMENT REPORT", first_page)
+            self.assertIn("Scarlet Harper", first_page)
+        finally:
+            doc.close()
 
     def test_lab_only_assessment_can_generate_review_draft(self):
         job = new_persistent_job()
