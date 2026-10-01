@@ -230,6 +230,24 @@ def run_gmail_intake() -> dict:
                 except ValueError:
                     target["status"] = "lab_received"
 
+        # Create/reuse persistent customer and property profiles from the
+        # PRO-LAB project and test-location metadata, then link the assessment.
+        try:
+            customer = store.ensure_customer(target.get("client_name", ""))
+            property_record = store.ensure_property(
+                customer["id"],
+                target.get("address", ""),
+                target.get("city", ""),
+                target.get("state", ""),
+                target.get("zip", ""),
+            )
+            target["customer_id"] = customer["id"]
+            target["property_id"] = property_record["id"]
+        except ValueError:
+            # A valid report can still be retained for review if a future
+            # laboratory format omits a customer or address.
+            pass
+
         filename = _safe_filename(attachment.filename, "PROLAB_Result.pdf")
         documents.save_bytes(target["id"], "lab", filename, attachment.content)
         target["lab_filename"] = filename
