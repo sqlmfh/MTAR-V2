@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 import unittest
 import tempfile
+
+from PIL import Image
 
 from job_store import SQLiteJobStore, new_persistent_job
 from prolab_parser import build_automated_job_from_prolab
@@ -35,10 +38,15 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         self.assertEqual(job["lab_metadata"]["report_number"], "2030805")
         self.assertEqual(set(mapping), {"2030805-1", "2030805-2", "2030805-3"})
 
+        self.assertEqual([area["name"] for area in job["areas"]], ["Coat Closet", "Bedroom Closet"])
         areas = {area["name"]: area for area in job["areas"]}
         self.assertEqual(set(areas), {"Bedroom Closet", "Coat Closet"})
         self.assertEqual(areas["Bedroom Closet"]["finding"], "Mold levels not elevated")
         self.assertEqual(areas["Coat Closet"]["finding"], "Active mold growth confirmed")
+        self.assertEqual(areas["Bedroom Closet"]["description"], "")
+        self.assertEqual(areas["Coat Closet"]["description"], "")
+        self.assertIn("Air Sample:", areas["Bedroom Closet"]["lab_summary"])
+        self.assertIn("Swab Sample:", areas["Coat Closet"]["lab_summary"])
 
         samples = {sample.get("lab_coc_line"): sample for sample in job["samples"]}
         outdoor = samples["2030805-1"]
@@ -113,6 +121,67 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
             first_page = doc[0].get_text("text")
             self.assertIn("MOLD ASSESSMENT REPORT", first_page)
             self.assertIn("Scarlet Harper", first_page)
+        finally:
+            doc.close()
+
+
+    def test_scarlet_photo_layout_generates_twelve_page_customer_report(self):
+        job = new_persistent_job()
+        build_automated_job_from_prolab(job, self.parsed, MOLD_DESCRIPTIONS.keys())
+        job["report_outcome"] = "Mold remediation required"
+        job["humidity"] = 44
+
+        areas = {area["name"]: area for area in job["areas"]}
+        areas["Coat Closet"]["moisture_notes"] = (
+            "All surfaces were dry during the time of inspection. "
+            "All materials were below 14% moisture content."
+        )
+        areas["Bedroom Closet"]["moisture_notes"] = (
+            "All surfaces were dry during the time of inspection. "
+            "All materials were below 14% moisture content."
+        )
+        areas["Coat Closet"]["thermal_notes"] = (
+            "Thermal Imaging: No abnormalities were observed. "
+            "All temperature variations were consistent with normal conditions."
+        )
+        areas["Bedroom Closet"]["thermal_notes"] = areas["Coat Closet"]["thermal_notes"]
+
+        def photo():
+            buffer = BytesIO()
+            Image.new("RGB", (640, 480), "white").save(buffer, format="JPEG")
+            buffer.seek(0)
+            return {"content": buffer}
+
+        def batch(count, kind="inspection"):
+            rows = []
+            for _ in range(count):
+                item = photo()
+                item["kind"] = kind
+                rows.append(item)
+            return rows
+
+        photos = {
+            "property": [photo()],
+            "outdoor": batch(3, "sampling"),
+            "environment": [photo()],
+            areas["Coat Closet"]["id"]: (
+                batch(3, "sampling") + batch(12, "inspection") + batch(4, "thermal")
+            ),
+            areas["Bedroom Closet"]["id"]: (
+                batch(2, "sampling") + batch(6, "inspection") + batch(4, "thermal")
+            ),
+        }
+
+        pdf = create_customer_pdf(job, photos)
+        doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
+        try:
+            self.assertEqual(len(doc), 12)
+            self.assertIn("COAT CLOSET", doc[4].get_text("text"))
+            self.assertIn("Thermal Imaging", doc[6].get_text("text"))
+            self.assertIn("BEDROOM CLOSET", doc[7].get_text("text"))
+            self.assertIn("LABORATORY RESULTS ANALYSIS", doc[9].get_text("text"))
+            self.assertIn("CONCLUSIONS", doc[10].get_text("text"))
+            self.assertIn("TERMS AND CONDITIONS", doc[11].get_text("text"))
         finally:
             doc.close()
 
