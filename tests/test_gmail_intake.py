@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from gmail_intake import confident_job_match, job_match_score, rank_jobs
+from gmail_intake import confident_job_match, is_confident_prolab_result, job_match_score, rank_jobs
 
 
 class GmailIntakeTests(unittest.TestCase):
@@ -19,6 +19,15 @@ class GmailIntakeTests(unittest.TestCase):
                 {"serial_number": "SWAB01"},
             ],
         }
+
+    def test_prolab_result_requires_matching_report_and_coc_line(self):
+        self.assertTrue(is_confident_prolab_result(self.parsed))
+
+        bad = {
+            "metadata": {"report_number": "9999999"},
+            "samples": [{"coc_line": "2030805-1"}],
+        }
+        self.assertFalse(is_confident_prolab_result(bad))
 
     def test_matching_rewards_property_and_serial_numbers(self):
         job = {
