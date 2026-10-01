@@ -483,11 +483,16 @@ def _draw_table(c: canvas.Canvas, x: float, y: float, widths: list[float], heade
         c.rect(x, current_y, total_w, row_h, fill=1, stroke=1)
         cx = x
         for idx, (value, width) in enumerate(zip(row, widths)):
-            if idx:
+            value_text = _safe_text(value)
+            unusual = "UNUSUAL" in value_text.upper() or "MOLD PRESENT" in value_text.upper()
+            if unusual:
+                c.setFillColor(colors.HexColor("#F7D7DC"))
+                c.rect(cx, current_y, width, row_h, fill=1, stroke=1)
+            elif idx:
                 c.line(cx, current_y + row_h, cx, current_y)
-            c.setFillColor(RED if "UNUSUAL" in _safe_text(value).upper() else TEXT)
-            c.setFont("Helvetica-Bold" if "UNUSUAL" in _safe_text(value).upper() else "Helvetica", 8.5)
-            c.drawString(cx + 4, current_y + 5, _safe_text(value)[:44])
+            c.setFillColor(RED if unusual else TEXT)
+            c.setFont("Helvetica-Bold" if unusual else "Helvetica", 8.5)
+            c.drawString(cx + 4, current_y + 5, value_text[:44])
             cx += width
     return current_y
 
