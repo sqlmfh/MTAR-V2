@@ -846,7 +846,8 @@ def build_automated_job_from_prolab(
         if area is None:
             area = new_area(area_name)
             area["finding"] = _automated_area_finding(lab)
-            area["description"] = _automated_sample_summary(lab)
+            area["lab_summary"] = _automated_sample_summary(lab)
+            area["description"] = ""
             area["source"] = "PRO-LAB"
             area["source_lab_key"] = lab.get("key", "")
             areas.append(area)
@@ -854,6 +855,15 @@ def build_automated_job_from_prolab(
         sample["area_id"] = area["id"]
         sample["location"] = area_name
 
+    finding_priority = {
+        "Active mold growth confirmed": 0,
+        "Elevated spore counts": 1,
+        "Visual mold present": 2,
+        "Needs consultant review": 3,
+        "Mold levels not elevated": 4,
+        "No mold detected": 5,
+    }
+    areas.sort(key=lambda area: finding_priority.get(area.get("finding", ""), 3))
     job["areas"] = areas
     unusual_growth = any(
         (not lab.get("is_air"))
@@ -875,8 +885,10 @@ def build_automated_job_from_prolab(
     job["automation_source"] = "PRO-LAB Gmail"
     job["automation_missing_fields"] = [
         "Indoor RH",
+        "Visual observations",
         "Inspection photos",
         "Moisture assessment",
+        "Thermal imaging notes when thermal photos are used",
         "Licensed consultant report outcome",
     ]
     return mapping
