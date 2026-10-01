@@ -99,6 +99,35 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
             self.assertEqual(second["skipped"], 1)
             self.assertEqual(len(store.list()), 1)
 
+            # A resend in a different Gmail message is also deduplicated by
+            # the PRO-LAB report number, not only by Gmail message ID.
+            resent = GmailPdfAttachment(
+                message_id="gmail_scarlet_resend",
+                thread_id="thread_scarlet_resend",
+                sender="prolab@example.test",
+                subject="PRO-LAB Scarlet Harper resend",
+                filename="Scarlet_Lab_Results_Resent.pdf",
+                content=b"%PDF-1.7\\nfixture-resend",
+            )
+            resent_client = _FakeGmailClient(resent)
+            with (
+                patch.object(nicegui_app, "store", store),
+                patch.object(nicegui_app, "documents", documents),
+                patch.object(nicegui_app, "gmail_client", resent_client),
+                patch.object(
+                    nicegui_app,
+                    "inspect_attachment",
+                    return_value={"parsed": parsed},
+                ),
+            ):
+                third = nicegui_app.run_gmail_intake()
+
+            self.assertEqual(third["created"], 0)
+            self.assertEqual(third["skipped"], 1)
+            self.assertEqual(len(store.list()), 1)
+            persisted = store.get(store.list()[0].id)
+            self.assertIn("gmail_scarlet_resend", persisted["gmail_message_ids"])
+
             forwarded = GmailPdfAttachment(
                 message_id="gmail_scarlet_forwarded",
                 thread_id="thread_scarlet_forwarded",
