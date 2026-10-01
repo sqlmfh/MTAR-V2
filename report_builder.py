@@ -408,8 +408,13 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
         r.bold = True
         r.font.color.rgb = RGBColor(24, 64, 88)
         r.font.size = Pt(17)
+        if area.get("lab_summary"):
+            doc.add_paragraph(area["lab_summary"])
         if area.get("description"):
-            doc.add_paragraph(area["description"])
+            p = doc.add_paragraph()
+            rr = p.add_run("Visual Observations: ")
+            rr.bold = True
+            p.add_run(area["description"])
         if area.get("moisture_notes"):
             p = doc.add_paragraph()
             rr = p.add_run("Moisture Assessment: ")
