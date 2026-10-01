@@ -544,7 +544,12 @@ def apply_prolab_results(
                 row["interpretation"] = interpretation
                 air_rows.append(row)
 
-                if fungus in supported and numeric_count > 0 and fungus not in detected_molds:
+                if (
+                    not job_sample.get("outdoor_control")
+                    and fungus in supported
+                    and numeric_count > 0
+                    and fungus not in detected_molds
+                ):
                     detected_molds.append(fungus)
         else:
             row = new_surface_lab_row(job_sample_id)
