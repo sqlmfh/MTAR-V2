@@ -478,7 +478,8 @@ def apply_prolab_results(
     determination is preserved separately on each sample and remains visible
     for consultant review.
     """
-    supported = set(supported_molds)
+    supported_order = list(supported_molds)
+    supported = set(supported_order)
     sample_map = {s["id"]: s for s in job.get("samples", [])}
     air_rows: list[dict] = []
     surface_rows: list[dict] = []
@@ -565,7 +566,7 @@ def apply_prolab_results(
     if surface_rows or any(s.get("type") == "Swab" for s in job.get("samples", [])):
         job["surface_lab_rows"] = surface_rows
     if detected_molds:
-        job["mold_types"] = detected_molds
+        job["mold_types"] = [name for name in supported_order if name in detected_molds]
 
     job["lab_metadata"] = dict(parsed.get("metadata", {}))
     return job
