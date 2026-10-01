@@ -61,6 +61,21 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         self.assertEqual(coat["lab_determination"], "UNUSUAL")
         self.assertIn("Hyphae", coat["lab_fungi"])
 
+        self.assertEqual(
+            set(job["mold_types"]),
+            {
+                "Cladosporium",
+                "Curvularia",
+                "Epicoccum",
+                "Hyphae",
+                "Other Ascospores",
+                "Other Basidiospores",
+                "Penicillium/Aspergillus",
+                "Smuts, myxomycetes",
+            },
+        )
+        self.assertNotIn("Alternaria", job["mold_types"])
+
     def test_customer_and_property_profiles_are_reused(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = SQLiteJobStore(Path(tmp) / "mtar.sqlite3")
