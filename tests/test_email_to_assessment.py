@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import unittest
+import tempfile
 
-from job_store import new_persistent_job
+from job_store import SQLiteJobStore, new_persistent_job
 from prolab_parser import build_automated_job_from_prolab
 from report_builder import MOLD_DESCRIPTIONS, create_report
 from pdf_report_builder import create_customer_pdf
@@ -59,6 +60,29 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         self.assertEqual(coat["area_id"], areas["Coat Closet"]["id"])
         self.assertEqual(coat["lab_determination"], "UNUSUAL")
         self.assertIn("Hyphae", coat["lab_fungi"])
+
+    def test_customer_and_property_profiles_are_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteJobStore(Path(tmp) / "mtar.sqlite3")
+            customer_a = store.ensure_customer("Scarlet Harper")
+            customer_b = store.ensure_customer("  SCARLET   HARPER  ")
+            self.assertEqual(customer_a["id"], customer_b["id"])
+
+            property_a = store.ensure_property(
+                customer_a["id"],
+                "16371 County Road 245",
+                "Terrell",
+                "TX",
+                "75160",
+            )
+            property_b = store.ensure_property(
+                customer_b["id"],
+                "16371 COUNTY ROAD 245",
+                "TERRELL",
+                "tx",
+                "75160",
+            )
+            self.assertEqual(property_a["id"], property_b["id"])
 
     def test_lab_only_assessment_can_generate_customer_pdf(self):
         job = new_persistent_job()
