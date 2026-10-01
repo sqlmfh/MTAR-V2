@@ -76,7 +76,7 @@ jobs:
               "environment": [photo("Indoor RH")],
               areas["Coat Closet"]["id"]: (
                   batch("Coat Sampling", 3, "sampling")
-                  + batch("Coat Inspection", 12, "inspection")
+                  + batch("Coat Inspection", 18, "inspection")
                   + batch("Coat Thermal", 4, "thermal")
               ),
               areas["Bedroom Closet"]["id"]: (
