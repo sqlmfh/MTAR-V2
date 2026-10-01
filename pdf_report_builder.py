@@ -348,7 +348,7 @@ def _draw_outdoor_page(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
     y -= 10
 
     outdoor_photos = _photos(photos.get("outdoor"))
-    y, _ = _photo_grid(c, outdoor_photos[:3], y, cols=3, cell_h=105, max_rows=1)
+    y, _ = _photo_grid(c, outdoor_photos[:3], y, cols=3, cell_h=140, max_rows=1)
     y -= 20
 
     y = _section_title(c, "Visual Observations & Moisture Readings", y, 14)
@@ -401,7 +401,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
         y -= 8
 
         if sampling:
-            y, _ = _photo_grid(c, sampling[:3], y, cols=3, cell_h=110, max_rows=1)
+            y, _ = _photo_grid(c, sampling[:3], y, cols=3, cell_h=140, max_rows=1)
             y -= 15
 
         moisture = area.get("moisture_notes") or "Moisture assessment not entered. Consultant review required."
@@ -409,7 +409,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
         y -= 10
 
         remaining = inspection[:]
-        y, used = _photo_grid(c, remaining, y, cols=3, cell_h=115, max_rows=2)
+        y, used = _photo_grid(c, remaining, y, cols=3, cell_h=140, max_rows=2)
         remaining = remaining[used:]
         _footer(c, page_no)
 
@@ -418,7 +418,7 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
             page_no += 1
             _header(c)
             y = PAGE_H - 145
-            y, used = _photo_grid(c, remaining, y, cols=3, cell_h=128, max_rows=4)
+            y, used = _photo_grid(c, remaining, y, cols=3, cell_h=140, max_rows=4)
             remaining = remaining[used:]
             _footer(c, page_no)
 
