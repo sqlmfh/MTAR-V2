@@ -116,7 +116,11 @@ def find_job_by_report_number(parsed: dict, jobs: Iterable[dict]) -> dict | None
             known = _norm(
                 (job.get("lab_parsed") or {}).get("metadata", {}).get("report_number")
             )
-        if known and known == report_number:
+        if (
+            known
+            and known == report_number
+            and (job.get("lab_filename") or (job.get("lab_parsed") or {}).get("samples"))
+        ):
             return job
     return None
 
