@@ -202,6 +202,24 @@ def run_gmail_intake() -> dict:
             result["skipped"] += 1
             continue
 
+        metadata = parsed.get("metadata", {})
+        report_number = str(metadata.get("report_number") or "").strip()
+        existing_report_job = next(
+            (
+                job for job in all_jobs
+                if report_number
+                and str(job.get("lab_metadata", {}).get("report_number") or "").strip() == report_number
+            ),
+            None,
+        )
+        if existing_report_job:
+            existing_report_job.setdefault("gmail_message_ids", []).append(attachment.message_id)
+            existing_report_job["gmail_message_ids"] = list(dict.fromkeys(existing_report_job["gmail_message_ids"]))
+            store.save(existing_report_job)
+            processed_ids.add(attachment.message_id)
+            result["skipped"] += 1
+            continue
+
         match = confident_job_match(parsed, awaiting_jobs)
         target = None
         created_from_gmail = False
@@ -712,6 +730,9 @@ def job_page(job_id: str):
                                 label="Consultant Finding",
                                 on_change=lambda e, target=area: target.__setitem__("finding", e.value),
                             ).props("outlined").classes("w-full")
+                        if area.get("lab_summary"):
+                            ui.label("Lab Result Summary").classes("text-xs font-semibold text-slate-500 mt-3")
+                            ui.label(area.get("lab_summary", "")).classes("text-sm text-slate-700")
                         ui.textarea(
                             "Visual Observations",
                             value=area.get("description", ""),
@@ -904,7 +925,7 @@ def job_page(job_id: str):
                                 ).props("outlined").classes("w-full")
                                 ui.number(
                                     "Sampling Minutes",
-                                    value=sample.get("flow_rate_minutes", 10),
+                                    value=sample.get("flow_rate_minutes", 5),
                                     min=0,
                                     on_change=lambda e, target=sample: target.__setitem__("flow_rate_minutes", e.value),
                                 ).props("outlined").classes("w-full")
