@@ -131,6 +131,8 @@ def validate_job(job: dict, lab_pdf_present: bool) -> list[str]:
 
     named_areas = [a for a in job.get("areas", []) if a.get("name", "").strip()]
     for area in named_areas:
+        if not str(area.get("description", "")).strip():
+            missing.append(f"Visual observations for {area['name']}")
         if not str(area.get("moisture_notes", "")).strip():
             missing.append(f"Moisture assessment for {area['name']}")
 
