@@ -104,6 +104,23 @@ def is_confident_prolab_result(parsed: dict) -> bool:
     return matching_coc_lines >= 1
 
 
+def find_job_by_report_number(parsed: dict, jobs: Iterable[dict]) -> dict | None:
+    """Find an existing MTAR assessment already linked to this lab report."""
+    report_number = _norm(parsed.get("metadata", {}).get("report_number"))
+    if not report_number:
+        return None
+
+    for job in jobs:
+        known = _norm(job.get("lab_metadata", {}).get("report_number"))
+        if not known:
+            known = _norm(
+                (job.get("lab_parsed") or {}).get("metadata", {}).get("report_number")
+            )
+        if known and known == report_number:
+            return job
+    return None
+
+
 def rank_jobs(parsed: dict, jobs: Iterable[dict]) -> list[dict]:
     ranked = []
     for job in jobs:
