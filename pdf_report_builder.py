@@ -78,27 +78,21 @@ def _draw_contain(c: canvas.Canvas, content, x: float, y: float, w: float, h: fl
         return
 
 
-def _header(c: canvas.Canvas):
+def _tdlr_mark(c: canvas.Canvas):
+    mark = ASSET_DIR / "Azeem_TDLR_Signature.png"
+    if mark.exists():
+        _draw_contain(c, str(mark), PAGE_W - 62, PAGE_H - 58, 42, 42)
+
+
+def _cover_header(c: canvas.Canvas):
     logo = ASSET_DIR / "MTAR_logo.png"
     if logo.exists():
-        _draw_contain(c, str(logo), LEFT, PAGE_H - 130, 190, 78)
+        _draw_contain(c, str(logo), LEFT, PAGE_H - 140, 195, 85)
 
-    c.setFont("Helvetica", 10)
+    _tdlr_mark(c)
     c.setFillColor(TEXT)
-    tx = c.beginText(PAGE_W - 80, PAGE_H - 78)
-    tx.setTextOrigin(PAGE_W - 80, PAGE_H - 78)
-    tx.setCharSpace(0)
-    for line in [
-        "Mold Testing and Removal",
-        "2031 John West Rd. #119",
-        "Dallas, TX 75228",
-        "(817) 718-5086",
-        "help@moldtestingandremoval.com",
-    ]:
-        tx.textLine(line)
-    # right-align by redrawing as separate strings
     c.setFont("Helvetica", 10)
-    y = PAGE_H - 78
+    y = PAGE_H - 82
     for line in [
         "Mold Testing and Removal",
         "2031 John West Rd. #119",
@@ -108,6 +102,11 @@ def _header(c: canvas.Canvas):
     ]:
         c.drawRightString(PAGE_W - LEFT, y, line)
         y -= 13
+
+
+def _header(c: canvas.Canvas):
+    # Interior pages in the Scarlet reference use the small TDLR mark only.
+    _tdlr_mark(c)
 
 
 def _footer(c: canvas.Canvas, page_no: int):
@@ -214,7 +213,7 @@ def _sample_label(sample: dict | None) -> str:
 
 
 def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
-    _header(c)
+    _cover_header(c)
     c.setFillColor(NAVY)
     c.setFont("Helvetica-Bold", 24)
     c.drawCentredString(PAGE_W / 2, PAGE_H - 178, "MOLD ASSESSMENT REPORT")
