@@ -77,6 +77,37 @@ class ReviewWorkflowTests(unittest.TestCase):
         issues = validate_job(job, lab_pdf_present=True)
         self.assertIn("Assign every indoor/surface sample to an inspection area", issues)
 
+    def test_final_validation_requires_scarlet_style_photos_and_moisture_notes(self):
+        job = new_job_state()
+        job["client_name"] = "Client"
+        job["address"] = "123 Main"
+        job["city"] = "Dallas"
+        job["state"] = "TX"
+        job["zip"] = "75201"
+        job["humidity"] = 48
+        job["report_outcome"] = "Mold remediation required"
+        job["areas"][0]["name"] = "Laundry"
+        job["areas"][0]["finding"] = "Visual mold present"
+        job["samples"][1]["area_id"] = job["areas"][0]["id"]
+
+        issues = validate_job(job, lab_pdf_present=True)
+        self.assertIn("Moisture assessment for Laundry", issues)
+        self.assertIn("Property exterior photo", issues)
+        self.assertIn("Inspection photos for Laundry", issues)
+        self.assertIn("Outdoor control sampling photo", issues)
+
+        job["areas"][0]["moisture_notes"] = "All materials were below 14% moisture content."
+        job["photos"] = [
+            {"role": "property", "filename": "property.jpg"},
+            {"role": "outdoor", "filename": "outdoor.jpg"},
+            {"role": "area", "area_id": job["areas"][0]["id"], "filename": "area.jpg"},
+        ]
+        issues = validate_job(job, lab_pdf_present=True)
+        self.assertNotIn("Moisture assessment for Laundry", issues)
+        self.assertNotIn("Property exterior photo", issues)
+        self.assertNotIn("Inspection photos for Laundry", issues)
+        self.assertNotIn("Outdoor control sampling photo", issues)
+
     def test_report_reflects_current_remediation_outcome_and_area_notes(self):
         area = new_area("Laundry Area")
         area["finding"] = "Active mold growth confirmed"
