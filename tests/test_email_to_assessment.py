@@ -62,8 +62,8 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         self.assertIn("Hyphae", coat["lab_fungi"])
 
         self.assertEqual(
-            set(job["mold_types"]),
-            {
+            job["mold_types"],
+            [
                 "Cladosporium",
                 "Curvularia",
                 "Epicoccum",
@@ -72,7 +72,7 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
                 "Other Basidiospores",
                 "Penicillium/Aspergillus",
                 "Smuts, myxomycetes",
-            },
+            ],
         )
         self.assertNotIn("Alternaria", job["mold_types"])
 
