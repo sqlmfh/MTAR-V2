@@ -10,7 +10,7 @@ from nicegui import app, run, ui
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
-from gmail_intake import GmailApiClient, confident_job_match, inspect_attachment, is_confident_prolab_result
+from gmail_intake import GmailApiClient, confident_job_match, find_job_by_report_number, inspect_attachment, is_confident_prolab_result
 from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
 from prolab_parser import apply_prolab_results, build_automated_job_from_prolab, parse_prolab_pdf, suggested_mapping
@@ -194,6 +194,14 @@ def run_gmail_intake() -> dict:
             result["ignored"] += 1
             continue
 
+        existing_report = find_job_by_report_number(parsed, all_jobs)
+        if existing_report:
+            existing_report.setdefault("gmail_message_ids", []).append(attachment.message_id)
+            store.save(existing_report)
+            processed_ids.add(attachment.message_id)
+            result["skipped"] += 1
+            continue
+
         match = confident_job_match(parsed, awaiting_jobs)
         target = None
         created_from_gmail = False
@@ -287,7 +295,8 @@ def run_gmail_intake() -> dict:
         except Exception as exc:
             target["automatic_draft_error"] = str(exc)
 
-        store.save(target)
+        saved_target = store.save(target)
+        all_jobs.append(saved_target)
         processed_ids.add(attachment.message_id)
         awaiting_jobs = [job for job in awaiting_jobs if job.get("id") != target.get("id")]
         result["imported"] += 1
