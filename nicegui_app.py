@@ -15,6 +15,7 @@ from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
 from prolab_parser import apply_prolab_results, build_automated_job_from_prolab, parse_prolab_pdf, suggested_mapping
 from photo_service import normalize_report_photo, photo_data_url
+from pdf_report_builder import create_customer_pdf
 from report_builder import MOLD_DESCRIPTIONS, create_report
 from workflow import (
     ALLOWED_TRANSITIONS,
@@ -245,9 +246,9 @@ def run_gmail_intake() -> dict:
             "created_assessment": created_from_gmail,
         }
 
-        # Generate a review draft automatically. The draft can contain explicit
-        # review-required placeholders for inspection facts that are not
-        # available in the lab PDF (RH, moisture notes, photos, final outcome).
+        # Generate review documents automatically. Lab-only drafts contain
+        # explicit review-required placeholders for inspection facts that are
+        # not available in the PRO-LAB PDF.
         try:
             report = create_report(target, {}, attachment.content)
             draft_filename = (
@@ -256,6 +257,14 @@ def run_gmail_intake() -> dict:
             )
             documents.save_bytes(target["id"], "reports", draft_filename, report.getvalue())
             target["latest_draft_filename"] = draft_filename
+
+            pdf = create_customer_pdf(target, {})
+            pdf_filename = (
+                f"{_safe_filename(target.get('client_name', ''), 'Client')}"
+                "_Mold_Assessment_AUTO_DRAFT.pdf"
+            )
+            documents.save_bytes(target["id"], "reports", pdf_filename, pdf.getvalue())
+            target["latest_pdf_draft_filename"] = pdf_filename
         except Exception as exc:
             target["automatic_draft_error"] = str(exc)
 
@@ -492,9 +501,14 @@ def job_page(job_id: str):
             entry = {
                 "content": __import__("io").BytesIO(content),
                 "caption": photo.get("caption", ""),
+                "kind": photo.get("kind", "inspection"),
             }
             if photo.get("role") == "property":
                 result.setdefault("property", []).append(entry)
+            elif photo.get("role") == "outdoor":
+                result.setdefault("outdoor", []).append(entry)
+            elif photo.get("role") == "environment":
+                result.setdefault("environment", []).append(entry)
             elif photo.get("role") == "area" and photo.get("area_id"):
                 result.setdefault(photo["area_id"], []).append(entry)
         return result
@@ -868,7 +882,12 @@ def job_page(job_id: str):
             samples_section()
 
         with ui.tab_panel(photos_tab).classes("px-0"):
-            async def handle_photo_upload(e, role: str, area_id: str | None = None):
+            async def handle_photo_upload(
+                e,
+                role: str,
+                area_id: str | None = None,
+                kind: str = "inspection",
+            ):
                 try:
                     raw = await e.file.read()
                     normalized = normalize_report_photo(raw)
@@ -900,6 +919,7 @@ def job_page(job_id: str):
                         "role": role,
                         "area_id": area_id,
                         "caption": "",
+                        "kind": kind,
                     }
                 )
                 save_job(job, notify=False)
@@ -1192,6 +1212,45 @@ def job_page(job_id: str):
                 )
                 ui.notify("Review draft generated", type="positive")
 
+            def generate_review_pdf():
+                try:
+                    report = create_customer_pdf(job, report_photos())
+                    output = report.getvalue()
+                except Exception as exc:
+                    ui.notify(f"Could not generate PDF draft: {exc}", type="negative", multi_line=True)
+                    return
+                filename = f"{_safe_filename(job.get('client_name', ''), 'Client')}_Mold_Assessment_DRAFT.pdf"
+                documents.save_bytes(job["id"], "reports", filename, output)
+                job["latest_pdf_draft_filename"] = filename
+                save_job(job, notify=False)
+                documents_section.refresh()
+                ui.download(output, filename=filename, media_type="application/pdf")
+                ui.notify("Scarlet-style PDF draft generated", type="positive")
+
+            def generate_final_pdf():
+                lab_bytes = lab_pdf_bytes()
+                issues = final_report_issues(job, lab_pdf_present=lab_bytes is not None)
+                if issues:
+                    ui.notify("Final PDF blocked: " + "; ".join(issues), type="negative", multi_line=True)
+                    report_section.refresh()
+                    return
+                try:
+                    report = create_customer_pdf(job, report_photos())
+                    output = report.getvalue()
+                except Exception as exc:
+                    ui.notify(f"Could not generate final PDF: {exc}", type="negative", multi_line=True)
+                    return
+                filename = f"{_safe_filename(job.get('client_name', ''), 'Client')}_Mold_Assessment_FINAL.pdf"
+                documents.save_bytes(job["id"], "reports", filename, output)
+                job["latest_final_pdf_filename"] = filename
+                advance_status_if("report_review", "ready_to_send")
+                save_job(job, notify=False)
+                status_section.refresh()
+                documents_section.refresh()
+                report_section.refresh()
+                ui.download(output, filename=filename, media_type="application/pdf")
+                ui.notify("Final customer PDF generated", type="positive")
+
             def generate_final_report():
                 lab_bytes = lab_pdf_bytes()
                 issues = final_report_issues(job, lab_pdf_present=lab_bytes is not None)
@@ -1249,8 +1308,10 @@ def job_page(job_id: str):
 
                 with ui.row().classes("w-full justify-end gap-2 mt-4"):
                     ui.button("Save Outcome", icon="save", on_click=persist).props("outline color=primary")
-                    ui.button("Generate Review Draft", icon="preview", on_click=generate_review_draft).props("outline color=primary")
-                    ui.button("Generate Final DOCX", icon="description", on_click=generate_final_report).props(
+                    ui.button("Generate Review DOCX", icon="description", on_click=generate_review_draft).props("outline color=primary")
+                    ui.button("Generate Review PDF", icon="picture_as_pdf", on_click=generate_review_pdf).props("outline color=primary")
+                    ui.button("Generate Final DOCX", icon="description", on_click=generate_final_report).props("outline color=primary")
+                    ui.button("Generate Final PDF", icon="picture_as_pdf", on_click=generate_final_pdf).props(
                         "unelevated color=primary"
                     )
 
