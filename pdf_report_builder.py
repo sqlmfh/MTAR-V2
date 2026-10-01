@@ -490,6 +490,49 @@ def _draw_table(c: canvas.Canvas, x: float, y: float, widths: list[float], heade
     return current_y
 
 
+def _draw_mold_entry(
+    c: canvas.Canvas,
+    mold_type: str,
+    description: str,
+    dangerous: bool,
+    y: float,
+) -> float:
+    size = 8.6
+    leading = 11
+    label = f"{mold_type}: "
+    c.setFont("Helvetica-Bold", size)
+    c.setFillColor(RED if dangerous else TEXT)
+    c.drawString(LEFT, y, label)
+    label_w = c.stringWidth(label, "Helvetica-Bold", size)
+
+    words = _safe_text(description).split()
+    lines: list[str] = []
+    current = ""
+    first_limit = RIGHT - (LEFT + label_w)
+    full_limit = RIGHT - LEFT
+
+    for word in words:
+        trial = word if not current else current + " " + word
+        limit = first_limit if not lines else full_limit
+        if c.stringWidth(trial, "Helvetica", size) <= limit:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+
+    c.setFillColor(TEXT)
+    c.setFont("Helvetica", size)
+    if lines:
+        c.drawString(LEFT + label_w, y, lines[0])
+        for line in lines[1:]:
+            y -= leading
+            c.drawString(LEFT, y, line)
+    return y - leading
+
+
 def _draw_lab_page(c: canvas.Canvas, job: dict, page_no: int):
     _header(c)
     y = PAGE_H - 165
@@ -499,7 +542,7 @@ def _draw_lab_page(c: canvas.Canvas, job: dict, page_no: int):
 
     y = _section_title(c, "Air Sample Comparison (Bioaerosol)", y, 13)
     rows = _air_summary_rows(job)
-    y = _draw_table(c, LEFT, y, [105, 190, 75, 115], ["Location", "Fungal Type", "Spores/m3", "Interpretation"], rows)
+    y = _draw_table(c, LEFT, y, [105, 190, 75, 115], ["Location", "Fungal Type", "Spores/m³", "Interpretation"], rows)
     y -= 28
 
     surface_rows = []
@@ -518,11 +561,10 @@ def _draw_lab_page(c: canvas.Canvas, job: dict, page_no: int):
 
     y = _section_title(c, "Mold Types Identified", y, 13)
     for mold_type in job.get("mold_types", []):
-        description = MOLD_DESCRIPTIONS.get(mold_type, ("", False))[0]
+        description, dangerous = MOLD_DESCRIPTIONS.get(mold_type, ("", False))
         if not description:
             continue
-        line = f"{mold_type}: {description}"
-        y = _paragraph(c, line, y, size=8.6, leading=11, width_chars=105)
+        y = _draw_mold_entry(c, mold_type, description, dangerous, y)
         y -= 4
         if y < 70:
             break
