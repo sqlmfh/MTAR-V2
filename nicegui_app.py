@@ -122,7 +122,7 @@ def create_field_job() -> dict:
             "serial_number": "",
             "sample_type_code": "P15",
             "flow_rate_liters": 15,
-            "flow_rate_minutes": 10,
+            "flow_rate_minutes": 5,
             "mold_analysis": True,
         }
     )
@@ -713,6 +713,11 @@ def job_page(job_id: str):
                             value=area.get("moisture_notes", ""),
                             on_change=lambda e, target=area: target.__setitem__("moisture_notes", e.value),
                         ).props("outlined autogrow").classes("w-full mt-3")
+                        ui.textarea(
+                            "Thermal Imaging Notes",
+                            value=area.get("thermal_notes", ""),
+                            on_change=lambda e, target=area: target.__setitem__("thermal_notes", e.value),
+                        ).props("outlined autogrow").classes("w-full mt-3")
 
                 with ui.row().classes("w-full justify-end mt-4"):
                     ui.button("Save Areas", icon="save", on_click=persist).props("unelevated color=primary")
@@ -728,7 +733,7 @@ def job_page(job_id: str):
                         {
                             "sample_type_code": "P15",
                             "flow_rate_liters": 15,
-                            "flow_rate_minutes": 10,
+                            "flow_rate_minutes": 5,
                         }
                     )
                 else:
