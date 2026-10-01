@@ -10,7 +10,7 @@ from nicegui import app, run, ui
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
-from gmail_intake import GmailApiClient, confident_job_match, inspect_attachment
+from gmail_intake import GmailApiClient, confident_job_match, inspect_attachment, is_confident_prolab_result
 from job_store import SQLiteJobStore, new_persistent_job
 from models import new_area, new_sample
 from prolab_parser import apply_prolab_results, build_automated_job_from_prolab, parse_prolab_pdf, suggested_mapping
@@ -190,7 +190,7 @@ def run_gmail_intake() -> dict:
 
         inspected = inspect_attachment(attachment)
         parsed = inspected["parsed"]
-        if not parsed.get("samples"):
+        if not parsed.get("samples") or not is_confident_prolab_result(parsed):
             result["ignored"] += 1
             continue
 
