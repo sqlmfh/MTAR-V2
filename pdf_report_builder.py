@@ -242,19 +242,21 @@ def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
         y -= 13
 
     y -= 12
+    label_x = LEFT
+    value_x = LEFT + 150
     c.setFillColor(NAVY)
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(LEFT, y, "ASSESSMENT DATE:")
+    c.drawString(label_x, y, "ASSESSMENT DATE:")
     c.setFillColor(TEXT)
     c.setFont("Helvetica", 10)
-    c.drawString(LEFT + 110, y, _date_text(job.get("inspection_date")))
+    c.drawString(value_x, y, _date_text(job.get("inspection_date")))
     y -= 18
     c.setFillColor(NAVY)
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(LEFT, y, "REPORT DATE:")
+    c.drawString(label_x, y, "REPORT DATE:")
     c.setFillColor(TEXT)
     c.setFont("Helvetica", 10)
-    c.drawString(LEFT + 88, y, _date_text(job.get("report_date")))
+    c.drawString(value_x, y, _date_text(job.get("report_date")))
     _footer(c, page_no)
 
 
