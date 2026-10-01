@@ -395,7 +395,7 @@ def dashboard_page():
                     ui.label("PRO-LAB Gmail Intake").classes("font-semibold text-slate-800")
                     if gmail_client.configured():
                         ui.label(
-                            "Connected by server-side Gmail API credentials. High-confidence reports can be matched to Awaiting Lab jobs automatically."
+                            "Connected to Gmail. Valid PRO-LAB reports are imported automatically; MTAR creates an assessment when one does not already exist."
                         ).classes("text-sm text-slate-500")
                     else:
                         ui.label(
