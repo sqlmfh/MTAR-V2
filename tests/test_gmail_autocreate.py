@@ -99,6 +99,40 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
             self.assertEqual(second["skipped"], 1)
             self.assertEqual(len(store.list()), 1)
 
+            forwarded = GmailPdfAttachment(
+                message_id="gmail_scarlet_forwarded",
+                thread_id="thread_scarlet_forwarded",
+                sender="someone@example.test",
+                subject="Fwd: PRO-LAB Scarlet Harper",
+                filename="Scarlet_Lab_Results.pdf",
+                content=b"%PDF-1.7\nfixture",
+            )
+            forwarded_gmail = _FakeGmailClient(forwarded)
+            with (
+                patch.object(nicegui_app, "store", store),
+                patch.object(nicegui_app, "documents", documents),
+                patch.object(nicegui_app, "gmail_client", forwarded_gmail),
+                patch.object(
+                    nicegui_app,
+                    "inspect_attachment",
+                    return_value={
+                        "message_id": forwarded.message_id,
+                        "thread_id": forwarded.thread_id,
+                        "sender": forwarded.sender,
+                        "subject": forwarded.subject,
+                        "filename": forwarded.filename,
+                        "parsed": parsed,
+                    },
+                ),
+            ):
+                third = nicegui_app.run_gmail_intake()
+
+            self.assertEqual(third["created"], 0)
+            self.assertEqual(third["skipped"], 1)
+            self.assertEqual(len(store.list()), 1)
+            refreshed = store.get(job["id"])
+            self.assertIn("gmail_scarlet_forwarded", refreshed["gmail_message_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()
