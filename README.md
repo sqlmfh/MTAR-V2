@@ -111,3 +111,25 @@ The current storage design is suitable for initial testing and a single running 
 - `mtar_services.py` holds every workflow action the UI calls (Gmail intake, lab import, duplicate protection, photos, COC, draft and final reports), so the rules can be tested without a browser.
 - The final customer PDF is the generated assessment with the original PRO-LAB certificate appended unchanged.
 - `assets/BLANK_COC.pdf` is the blank PRO-LAB COC; MTAR fills it from the assessment (lab media such as SWAB or PRO-15 are written as the COC codes SW and P15).
+
+### Google Drive photo import (`drive-photo-import`)
+
+Inspectors upload photos from their phone into one Drive folder per assessment. MTAR places each photo by the folder it is in:
+
+```text
+MTAR Photos/                                  <- optional root (DRIVE_PHOTOS_FOLDER)
+    Scarlet Harper - 16371 County Road 245/   <- one folder per assessment
+        Property/        cover photo (one is kept)
+        Outdoor/         outdoor control sampling photos
+        RH/              RH meter photo
+        Coat Closet/     inspection photos for that area
+            Sampling/    sampling photos for that area
+            Thermal/     thermal images for that area
+```
+
+- Link a folder by pasting its link on the Photos tab. When `DRIVE_PHOTOS_FOLDER` is set, an assessment links itself to the one folder whose name contains its client name or street address.
+- A folder that matches no existing area creates that area. Images loose in the job folder, or in a folder MTAR does not recognise, are imported to **Unsorted** on the Photos tab, where the user picks their section; they stay out of the report until filed.
+- New photos are imported on the same timer as Gmail and with **Import from Drive now**. Each Drive file is imported once, so a photo deleted in MTAR is not brought back.
+- iPhone HEIC photos are converted to JPEG.
+
+Access reuses the Gmail OAuth client. The refresh token must include `https://www.googleapis.com/auth/drive.readonly`: regenerate it in the OAuth Playground with both the Gmail and Drive scopes and replace `GMAIL_REFRESH_TOKEN` (or set a separate `DRIVE_REFRESH_TOKEN`). Enable the Google Drive API in the same Google Cloud project.

@@ -32,7 +32,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-IMAGE_TYPES = ["jpg", "jpeg", "png", "webp"]
+IMAGE_TYPES = ["jpg", "jpeg", "png", "webp", "heic", "heif"]
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ IMAGE_TYPES = ["jpg", "jpeg", "png", "webp"]
 
 @st.cache_resource
 def _start_gmail_poller() -> threading.Thread | None:
-    if not svc.gmail_client.configured():
+    if not (svc.gmail_client.configured() or svc.drive_client.configured()):
         return None
     thread = threading.Thread(target=svc.gmail_poll_loop, name="mtar-gmail-poller", daemon=True)
     thread.start()
@@ -545,9 +545,94 @@ def _photo_upload_form(job: dict, form_key: str, label: str, role: str, *, area_
             st.rerun()
 
 
+def render_drive_photos(job: dict) -> None:
+    with st.container(border=True):
+        st.markdown("**Google Drive photos**")
+        if not svc.drive_client.configured():
+            st.caption(
+                "Not connected. Add the Google Drive read-only permission to the Google sign-in to pull "
+                "photos straight from the inspector's Drive folder."
+            )
+            return
+
+        folder_id = job.get("drive_folder_id")
+        if folder_id:
+            st.caption(
+                f"Linked to [this Drive folder]({svc.folder_link(folder_id)}). New photos are imported "
+                f"automatically every {svc.GMAIL_POLL_SECONDS // 60} minute(s). Subfolders decide placement: "
+                "Property, Outdoor, RH, and one folder per area (with optional Sampling and Thermal inside). "
+                "Loose photos land in Unsorted below for you to place."
+            )
+            c1, c2 = st.columns([1, 1])
+            if c1.button("Import from Drive now", icon=":material/cloud_download:", key=f"drive_sync_{job['id']}", width="stretch"):
+                with st.spinner("Downloading photos from Drive…"):
+                    result = run_action(svc.sync_drive_photos, job)
+                if result:
+                    flash("success", f"Imported {result[1]['imported']} new photo(s) from Drive.")
+                st.rerun()
+            if c2.button("Unlink folder", key=f"drive_unlink_{job['id']}", width="stretch"):
+                svc.unlink_drive_folder(job)
+                st.rerun()
+        else:
+            st.caption(
+                "Paste the link to this assessment's Drive folder"
+                + (", or name a folder in the MTAR Photos folder after the client or address and it links itself." if svc.DRIVE_PHOTOS_FOLDER else ".")
+            )
+            with st.form(f"drive_link_{job['id']}", clear_on_submit=True):
+                link = st.text_input("Drive folder link")
+                if st.form_submit_button("Link folder") and link:
+                    if run_action(svc.link_drive_folder, job, link, success="Drive folder linked."):
+                        run_action(svc.sync_drive_photos, svc.store.get(job["id"]))
+                    st.rerun()
+
+        last = job.get("drive_last_sync")
+        if last:
+            parts = [f"Last import {last.get('at', '')[:16].replace('T', ' ')} UTC: {last.get('imported', 0)} new"]
+            if last.get("areas_created"):
+                parts.append("new areas from folders: " + ", ".join(last["areas_created"]))
+            st.caption(" · ".join(parts))
+            if last.get("unplaced"):
+                st.warning("Not imported: " + ", ".join(last["unplaced"]))
+            for error in last.get("errors", []):
+                st.error(error)
+
+
+def render_unsorted_photos(job: dict, photos: list[dict]) -> None:
+    if not photos:
+        return
+    targets = {"property": "Property exterior (cover)", "outdoor": "Outdoor control", "environment": "RH meter"}
+    for area in job.get("areas", []):
+        targets[f"area:{area['id']}"] = f"Area: {area.get('name') or 'Unnamed area'}"
+    with st.container(border=True):
+        st.markdown(f"**Unsorted photos from Drive · {len(photos)}**")
+        st.caption(
+            "These were loose in the Drive folder, so MTAR doesn't know where they go. "
+            "Pick a section for each one. Unsorted photos are left out of the report."
+        )
+        columns = st.columns(3)
+        for i, photo in enumerate(photos):
+            with columns[i % 3]:
+                content = svc.photo_bytes(job, photo)
+                if content:
+                    st.image(content, width="stretch")
+                if photo.get("drive_path"):
+                    st.caption(f"From {photo['drive_path']}/")
+                choice = st.selectbox("Goes in", list(targets), format_func=targets.get, key=f"assign_{photo['id']}")
+                b1, b2 = st.columns(2)
+                if b1.button("Move", key=f"move_{photo['id']}", type="primary", width="stretch"):
+                    role, _, area_id = choice.partition(":")
+                    run_action(svc.assign_photo, job, photo["id"], role, area_id or None)
+                    st.rerun()
+                if b2.button("Delete", key=f"del_{photo['id']}", icon=":material/delete:", width="stretch"):
+                    svc.delete_photo(job, photo["id"])
+                    st.rerun()
+
+
 def render_photos(job: dict) -> None:
     photos = job.get("photos", [])
     st.caption("Photos are placed in the report by role. Area photos appear under their area in upload order.")
+    render_drive_photos(job)
+    render_unsorted_photos(job, [p for p in photos if p.get("role") == "unsorted"])
 
     with st.container(border=True):
         st.markdown("**Property exterior (report cover)**")
