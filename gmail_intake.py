@@ -160,7 +160,7 @@ class GmailApiClient:
     - GMAIL_USER_ID (optional; defaults to "me")
 
     The OAuth refresh token should belong to the mailbox that receives PRO-LAB
-    results. No interactive OAuth flow runs inside NiceGUI.
+    results. No interactive OAuth flow runs inside the app.
     """
 
     def __init__(self) -> None:

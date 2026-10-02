@@ -143,6 +143,81 @@ class SQLiteJobStore:
                 """
             )
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lab_inbox (
+                    message_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    filename TEXT NOT NULL DEFAULT '',
+                    sender TEXT NOT NULL DEFAULT '',
+                    subject TEXT NOT NULL DEFAULT '',
+                    report_number TEXT NOT NULL DEFAULT '',
+                    project_name TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    job_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+    def record_inbox_item(
+        self,
+        message_id: str,
+        status: str,
+        *,
+        filename: str = "",
+        sender: str = "",
+        subject: str = "",
+        report_number: str = "",
+        project_name: str = "",
+        reason: str = "",
+    ) -> dict:
+        """Record a Gmail PDF that was not imported automatically.
+
+        ``needs_review`` items look partly like PRO-LAB results and are shown in
+        the Lab Inbox. ``ignored`` items are unrelated PDFs, kept only so the
+        same message is not parsed again on every poll.
+        """
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO lab_inbox (
+                    message_id, status, filename, sender, subject,
+                    report_number, project_name, reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO NOTHING
+                """,
+                (message_id, status, filename, sender, subject, report_number, project_name, reason, now, now),
+            )
+        return self.get_inbox_item(message_id) or {}
+
+    def get_inbox_item(self, message_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM lab_inbox WHERE message_id = ?", (message_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_inbox(self, *, status: str = "needs_review") -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM lab_inbox WHERE status = ? ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def inbox_message_ids(self) -> set[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT message_id FROM lab_inbox").fetchall()
+        return {row["message_id"] for row in rows}
+
+    def resolve_inbox_item(self, message_id: str, status: str, *, job_id: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE lab_inbox SET status = ?, job_id = ?, updated_at = ? WHERE message_id = ?",
+                (status, job_id, utc_now_iso(), message_id),
+            )
+
     def ensure_customer(self, name: str) -> dict:
         """Return an existing customer profile or create one by normalized name."""
         display = " ".join(str(name or "").split()).strip()

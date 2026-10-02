@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python nicegui_app.py",
+    "startCommand": "streamlit run app.py --server.port $PORT --server.address 0.0.0.0",
     "healthcheckPath": "/",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from document_store import FileDocumentStore
 from gmail_intake import GmailPdfAttachment
 from job_store import SQLiteJobStore
-import nicegui_app
+import mtar_services
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "scarlet_parsed_expected.json"
@@ -44,11 +44,11 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
             fake_gmail = _FakeGmailClient(attachment)
 
             with (
-                patch.object(nicegui_app, "store", store),
-                patch.object(nicegui_app, "documents", documents),
-                patch.object(nicegui_app, "gmail_client", fake_gmail),
+                patch.object(mtar_services, "store", store),
+                patch.object(mtar_services, "documents", documents),
+                patch.object(mtar_services, "gmail_client", fake_gmail),
                 patch.object(
-                    nicegui_app,
+                    mtar_services,
                     "inspect_attachment",
                     return_value={
                         "message_id": attachment.message_id,
@@ -60,7 +60,7 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
                     },
                 ),
             ):
-                result = nicegui_app.run_gmail_intake()
+                result = mtar_services.run_gmail_intake()
 
             self.assertEqual(result["checked"], 1)
             self.assertEqual(result["created"], 1)
@@ -84,16 +84,16 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
 
             # The same Gmail message must not create a duplicate assessment.
             with (
-                patch.object(nicegui_app, "store", store),
-                patch.object(nicegui_app, "documents", documents),
-                patch.object(nicegui_app, "gmail_client", fake_gmail),
+                patch.object(mtar_services, "store", store),
+                patch.object(mtar_services, "documents", documents),
+                patch.object(mtar_services, "gmail_client", fake_gmail),
                 patch.object(
-                    nicegui_app,
+                    mtar_services,
                     "inspect_attachment",
                     return_value={"parsed": parsed},
                 ),
             ):
-                second = nicegui_app.run_gmail_intake()
+                second = mtar_services.run_gmail_intake()
 
             self.assertEqual(second["created"], 0)
             self.assertEqual(second["skipped"], 1)
@@ -111,16 +111,16 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
             )
             resent_client = _FakeGmailClient(resent)
             with (
-                patch.object(nicegui_app, "store", store),
-                patch.object(nicegui_app, "documents", documents),
-                patch.object(nicegui_app, "gmail_client", resent_client),
+                patch.object(mtar_services, "store", store),
+                patch.object(mtar_services, "documents", documents),
+                patch.object(mtar_services, "gmail_client", resent_client),
                 patch.object(
-                    nicegui_app,
+                    mtar_services,
                     "inspect_attachment",
                     return_value={"parsed": parsed},
                 ),
             ):
-                third = nicegui_app.run_gmail_intake()
+                third = mtar_services.run_gmail_intake()
 
             self.assertEqual(third["created"], 0)
             self.assertEqual(third["skipped"], 1)
@@ -138,11 +138,11 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
             )
             forwarded_gmail = _FakeGmailClient(forwarded)
             with (
-                patch.object(nicegui_app, "store", store),
-                patch.object(nicegui_app, "documents", documents),
-                patch.object(nicegui_app, "gmail_client", forwarded_gmail),
+                patch.object(mtar_services, "store", store),
+                patch.object(mtar_services, "documents", documents),
+                patch.object(mtar_services, "gmail_client", forwarded_gmail),
                 patch.object(
-                    nicegui_app,
+                    mtar_services,
                     "inspect_attachment",
                     return_value={
                         "message_id": forwarded.message_id,
@@ -154,7 +154,7 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
                     },
                 ),
             ):
-                third = nicegui_app.run_gmail_intake()
+                third = mtar_services.run_gmail_intake()
 
             self.assertEqual(third["created"], 0)
             self.assertEqual(third["skipped"], 1)

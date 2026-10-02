@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - automation-foundation
+      - streamlit-v3
 
 jobs:
   unit-tests:
@@ -18,8 +19,8 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
-      - name: Compile NiceGUI app
-        run: python -m py_compile nicegui_app.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py pdf_report_builder.py gmail_intake.py
+      - name: Compile Streamlit app
+        run: python -m py_compile app.py mtar_services.py job_store.py workflow.py coc_builder.py document_store.py photo_service.py report_builder.py pdf_report_builder.py gmail_intake.py
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 

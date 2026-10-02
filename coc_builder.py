@@ -120,7 +120,7 @@ def build_coc_payload(
     """Convert the existing MTAR job dict into a PRO-LAB COC payload.
 
     The payload is UI/framework independent. It can be produced from Streamlit,
-    NiceGUI, an API, or a future background automation without changing the PDF
+    an API, or a future background automation without changing the PDF
     renderer.
     """
     company_data = dict(COMPANY_DEFAULTS)
