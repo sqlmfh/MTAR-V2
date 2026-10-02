@@ -6,3 +6,4 @@ Pillow
 google-api-python-client
 google-auth
 reportlab
+pillow-heif

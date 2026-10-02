@@ -19,6 +19,7 @@ import fitz
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
+from drive_photos import DriveClient, find_job_folder, folder_id_from_link, folder_link, sync_job_photos
 from gmail_intake import (
     GmailApiClient,
     confident_job_match,
@@ -51,6 +52,8 @@ GMAIL_POLL_SECONDS = max(60, int(os.environ.get("GMAIL_POLL_SECONDS", "300")))
 store = SQLiteJobStore(DB_PATH)
 documents = FileDocumentStore(DOCUMENT_ROOT)
 gmail_client = GmailApiClient()
+drive_client = DriveClient()
+DRIVE_PHOTOS_FOLDER = folder_id_from_link(os.environ.get("DRIVE_PHOTOS_FOLDER", ""))
 
 # Manual "Check Gmail Now" and the background poller must never import the
 # same message twice by running at the same moment.
@@ -431,6 +434,11 @@ def gmail_poll_loop() -> None:
                 check_gmail_now()
             except Exception:
                 pass  # recorded in LAST_GMAIL_CHECK
+        if drive_client.configured():
+            try:
+                sync_all_drive_photos()
+            except Exception:
+                pass  # per-assessment errors are recorded on the assessment
         time.sleep(GMAIL_POLL_SECONDS)
 
 
@@ -518,8 +526,8 @@ def create_job_from_inbox_item(message_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def add_area(job: dict) -> dict:
-    job.setdefault("areas", []).append(new_area(f"Inspection Area {len(job.get('areas', [])) + 1}"))
+def add_area(job: dict, name: str | None = None) -> dict:
+    job.setdefault("areas", []).append(new_area(name or f"Inspection Area {len(job.get('areas', [])) + 1}"))
     return store.save(job)
 
 
@@ -572,6 +580,7 @@ def add_photo(
     *,
     area_id: str | None = None,
     kind: str = "inspection",
+    drive_file_id: str | None = None,
 ) -> dict:
     """Normalize and store one photo. A new property photo replaces the old one."""
     normalized = normalize_report_photo(raw)
@@ -594,6 +603,7 @@ def add_photo(
             "area_id": area_id,
             "caption": "",
             "kind": kind,
+            **({"drive_file_id": drive_file_id} if drive_file_id else {}),
         }
     )
     return store.save(job)
@@ -768,3 +778,76 @@ def generate_final_pdf(job: dict) -> tuple[dict, str, bytes]:
     job["latest_final_pdf_filename"] = filename
     job = advance_status_if(job, "report_review", "ready_to_send")
     return store.save(job), filename, output
+
+
+# ---------------------------------------------------------------------------
+# Google Drive photos
+# ---------------------------------------------------------------------------
+
+DRIVE_SYNC_STATUSES = {"draft", "inspection", "awaiting_lab", "lab_received", "report_review"}
+
+
+def link_drive_folder(job: dict, link: str) -> dict:
+    folder_id = folder_id_from_link(link)
+    if not folder_id:
+        raise ValueError("Paste a Google Drive folder link (it contains /folders/).")
+    job["drive_folder_id"] = folder_id
+    return store.save(job)
+
+
+def unlink_drive_folder(job: dict) -> dict:
+    job.pop("drive_folder_id", None)
+    return store.save(job)
+
+
+def _auto_link_drive_folder(job: dict, root_children: list[dict] | None) -> dict:
+    if job.get("drive_folder_id") or not root_children:
+        return job
+    folder = find_job_folder(job, root_children)
+    if folder:
+        job["drive_folder_id"] = folder["id"]
+        job = store.save(job)
+    return job
+
+
+def sync_drive_photos(job: dict, *, root_children: list[dict] | None = None) -> tuple[dict, dict]:
+    """Import new photos from this assessment's Drive folder."""
+    if not drive_client.configured():
+        raise ValueError("Google Drive is not connected. Add the Drive scope to the Google sign-in first.")
+    if root_children is None and DRIVE_PHOTOS_FOLDER and not job.get("drive_folder_id"):
+        root_children = drive_client.list_children(DRIVE_PHOTOS_FOLDER)
+    job = _auto_link_drive_folder(job, root_children)
+    if not job.get("drive_folder_id"):
+        raise ValueError("No Drive folder is linked to this assessment yet.")
+
+    job, result = sync_job_photos(job, drive_client, add_photo=add_photo, add_area=add_area)
+    summary = {
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "imported": result.imported,
+        "skipped": result.skipped,
+        "areas_created": result.areas_created,
+        "unplaced": result.unplaced,
+        "errors": result.errors,
+    }
+    job["drive_last_sync"] = summary
+    return store.save(job), summary
+
+
+def sync_all_drive_photos() -> int:
+    """Background pass: pull new Drive photos for every open assessment."""
+    root_children = drive_client.list_children(DRIVE_PHOTOS_FOLDER) if DRIVE_PHOTOS_FOLDER else None
+    imported = 0
+    for summary in store.list(statuses=sorted(DRIVE_SYNC_STATUSES), limit=500):
+        job = store.get(summary.id)
+        if not job:
+            continue
+        job = _auto_link_drive_folder(job, root_children)
+        if not job.get("drive_folder_id"):
+            continue
+        try:
+            _, result = sync_drive_photos(job, root_children=root_children)
+            imported += result["imported"]
+        except Exception as exc:
+            job["drive_last_sync"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "errors": [str(exc)]}
+            store.save(job)
+    return imported

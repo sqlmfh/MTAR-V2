@@ -5,8 +5,15 @@ from io import BytesIO
 
 from PIL import Image, ImageOps
 
+try:  # iPhone photos are HEIC; decode them when pillow-heif is installed.
+    from pillow_heif import register_heif_opener
 
-ALLOWED_INPUT_FORMATS = {"JPEG", "PNG", "WEBP"}
+    register_heif_opener()
+except ImportError:  # pragma: no cover - optional dependency
+    pass
+
+
+ALLOWED_INPUT_FORMATS = {"JPEG", "PNG", "WEBP", "HEIF"}
 
 
 def normalize_report_photo(content: bytes, *, max_dimension: int = 2200, quality: int = 88) -> bytes:
@@ -22,7 +29,7 @@ def normalize_report_photo(content: bytes, *, max_dimension: int = 2200, quality
     try:
         with Image.open(BytesIO(content)) as source:
             if (source.format or "").upper() not in ALLOWED_INPUT_FORMATS:
-                raise ValueError("Photo must be JPEG, PNG, or WEBP")
+                raise ValueError("Photo must be JPEG, PNG, WEBP, or HEIC")
 
             image = ImageOps.exif_transpose(source)
             if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
