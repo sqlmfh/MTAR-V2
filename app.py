@@ -19,20 +19,22 @@ from workflow import ALLOWED_TRANSITIONS
 
 st.set_page_config(page_title="MTAR", page_icon="🦠", layout="wide")
 
+# Colors here are translucent or inherit the text color, so they read well in
+# both the light and dark themes defined in .streamlit/config.toml.
 st.markdown(
     """
 <style>
-    h1, h2, h3 {color: #184058;}
-    .mtar-muted {color: #64748b; font-size: 0.9rem;}
+    .mtar-muted {opacity: 0.7; font-size: 0.9rem;}
     .mtar-pill {display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
-                background: #e2e8f0; color: #1e293b; font-size: 0.8rem; font-weight: 600;}
-    .mtar-pill-red {background: #fde2e4; color: #b42318;}
-    .mtar-pill-green {background: #dcfce7; color: #166534;}
-    .mtar-source {color: #64748b; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;}
+                background: rgba(100, 116, 139, 0.18); font-size: 0.8rem; font-weight: 600;}
+    .mtar-pill-red {background: rgba(220, 38, 38, 0.16); color: #E5484D;}
+    .mtar-pill-green {background: rgba(22, 163, 74, 0.16); color: #22A55B;}
+    .mtar-source {opacity: 0.7; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;}
 </style>
 """,
     unsafe_allow_html=True,
 )
+
 
 # Times are stored in UTC and shown in the office's local time.
 LOCAL_TZ = ZoneInfo(os.environ.get("MTAR_TIMEZONE", "America/Chicago"))
@@ -171,6 +173,7 @@ def render_sidebar() -> None:
             job = svc.save_job(svc.create_field_job())
             open_assessment(job["id"])
             st.rerun()
+        st.caption("Dark mode: open the ⋮ menu at the top right and pick Dark (or System to follow your computer).")
 
         st.divider()
         st.markdown("**PRO-LAB Gmail intake**")
@@ -255,6 +258,7 @@ def render_lab_inbox(jobs: list[dict]) -> None:
                     st.rerun()
                 if c3.button("Ignore", key=f"inbox_ignore_{item['message_id']}"):
                     svc.ignore_inbox_item(item["message_id"])
+                    flash("info", f"Ignored {item['filename']}.")
                     st.rerun()
 
 
@@ -593,6 +597,7 @@ def render_drive_photos(job: dict) -> None:
                 st.rerun()
             if c2.button("Unlink folder", key=f"drive_unlink_{job['id']}", width="stretch"):
                 svc.unlink_drive_folder(job)
+                flash("success", "Drive folder unlinked. Photos already imported stay on this assessment.")
                 st.rerun()
         else:
             st.caption(
@@ -871,7 +876,13 @@ def render_assessment(job_id: str) -> None:
         st.rerun()
     s2.markdown(f"<br><span class='mtar-muted'>{next_step(job)}</span>", unsafe_allow_html=True)
 
-    tabs = st.tabs(["Overview", "Inspection Areas", "Samples", "Photos", "Lab Results", "Report", "Documents"])
+    # The key keeps the open tab across reruns; without it, any message shown
+    # above the tabs after a button click sent the user back to Overview.
+    tabs = st.tabs(
+        ["Overview", "Inspection Areas", "Samples", "Photos", "Lab Results", "Report", "Documents"],
+        key=f"tabs_{job_id}",
+        on_change="rerun",
+    )
     with tabs[0]:
         render_overview(job)
     with tabs[1]:

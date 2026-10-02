@@ -1,6 +1,18 @@
-[theme]
+# Light and dark themes. The app follows the device's light/dark setting;
+# users can switch in the ⋮ menu (System / Light / Dark).
+[theme.light]
 primaryColor = "#184058"
-base = "light"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#1B2B38"
+linkColor = "#1D5F86"
+
+[theme.dark]
+primaryColor = "#4F9BC9"
+backgroundColor = "#0E1720"
+secondaryBackgroundColor = "#16232E"
+textColor = "#E3EAF0"
+linkColor = "#7DB9DE"
 
 [server]
 headless = true
