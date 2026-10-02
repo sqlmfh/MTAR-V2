@@ -783,7 +783,9 @@ def _automated_sample_summary(lab: dict) -> str:
 
     fungi = [name for name, value in lab.get("fungi", {}).items() if value]
     if fungi:
-        joined = ", ".join(fungi)
+        joined = fungi[0] if len(fungi) == 1 else (
+            f"{fungi[0]} and {fungi[1]}" if len(fungi) == 2 else ", ".join(fungi[:-1]) + f", and {fungi[-1]}"
+        )
         return (
             f"Swab Sample: Sample returned positive for {joined} growth. "
             f"Determination is {determination or 'pending review'}."

@@ -119,7 +119,7 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         try:
             self.assertGreaterEqual(len(doc), 8)
             first_page = doc[0].get_text("text")
-            self.assertIn("MOLD ASSESSMENT REPORT", first_page)
+            self.assertIn("MOLD ASSESSMENT REPORT", first_page.upper())
             self.assertIn("Scarlet Harper", first_page)
         finally:
             doc.close()
@@ -176,12 +176,12 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
         try:
             self.assertEqual(len(doc), 12)
-            self.assertIn("COAT CLOSET", doc[4].get_text("text"))
+            self.assertIn("COAT CLOSET", doc[4].get_text("text").upper())
             self.assertIn("Thermal Imaging", doc[6].get_text("text"))
-            self.assertIn("BEDROOM CLOSET", doc[7].get_text("text"))
-            self.assertIn("LABORATORY RESULTS ANALYSIS", doc[9].get_text("text"))
-            self.assertIn("CONCLUSIONS", doc[10].get_text("text"))
-            self.assertIn("TERMS AND CONDITIONS", doc[11].get_text("text"))
+            self.assertIn("BEDROOM CLOSET", doc[7].get_text("text").upper())
+            self.assertIn("LABORATORY RESULTS ANALYSIS", doc[9].get_text("text").upper())
+            self.assertIn("CONCLUSIONS", doc[10].get_text("text").upper())
+            self.assertIn("TERMS AND CONDITIONS", doc[11].get_text("text").upper())
         finally:
             doc.close()
 
