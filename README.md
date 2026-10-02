@@ -80,6 +80,7 @@ Configure these environment variables on the host:
 - `GMAIL_REFRESH_TOKEN`
 - `GMAIL_USER_ID` (optional, defaults to `me`)
 - `GMAIL_POLL_SECONDS` (optional, defaults to 300 seconds)
+- `MTAR_TIMEZONE` (optional, defaults to `America/Chicago`; times in the app are shown in this zone)
 
 The OAuth token only needs the Gmail read-only scope. The intake worker searches recent PDF attachments, parses each PDF with the existing PRO-LAB parser, and compares the result against `Awaiting Lab` jobs.
 

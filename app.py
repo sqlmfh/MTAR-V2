@@ -5,8 +5,10 @@ and passes user input to those services.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timezone
+import os
 import threading
+from zoneinfo import ZoneInfo
 
 import fitz
 import pandas as pd
@@ -31,6 +33,25 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
+# Times are stored in UTC and shown in the office's local time.
+LOCAL_TZ = ZoneInfo(os.environ.get("MTAR_TIMEZONE", "America/Chicago"))
+
+
+def local_time(value) -> str:
+    """Format a UTC datetime or ISO string as e.g. "Oct 02, 3:32 PM CDT"."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if not isinstance(value, datetime):
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    local = value.astimezone(LOCAL_TZ)
+    return f"{local:%b %d}, {local:%I:%M %p}".replace(", 0", ", ") + f" {local:%Z}"
+
 
 IMAGE_TYPES = ["jpg", "jpeg", "png", "webp", "heic", "heif"]
 
@@ -157,7 +178,7 @@ def render_sidebar() -> None:
             last = svc.LAST_GMAIL_CHECK
             if last.get("status") == "ok":
                 st.caption(
-                    f"Last check {last['at']:%b %d, %H:%M} UTC: {last['checked']} PDFs, "
+                    f"Last check {local_time(last['at'])}: {last['checked']} PDFs, "
                     f"{last['imported']} imported, {last['created']} new, {last['ambiguous']} need review."
                 )
             elif last.get("status") == "error":
@@ -587,7 +608,7 @@ def render_drive_photos(job: dict) -> None:
 
         last = job.get("drive_last_sync")
         if last:
-            parts = [f"Last import {last.get('at', '')[:16].replace('T', ' ')} UTC: {last.get('imported', 0)} new"]
+            parts = [f"Last import {local_time(last.get('at', ''))}: {last.get('imported', 0)} new"]
             if last.get("areas_created"):
                 parts.append("new areas from folders: " + ", ".join(last["areas_created"]))
             st.caption(" · ".join(parts))
