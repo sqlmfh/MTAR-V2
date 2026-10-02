@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from textwrap import wrap
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 from report_builder import MOLD_DESCRIPTIONS
@@ -15,15 +16,46 @@ BASE_DIR = Path(__file__).resolve().parent
 ASSET_DIR = BASE_DIR / "assets"
 
 PAGE_W, PAGE_H = letter
-LEFT = 78
-RIGHT = PAGE_W - 78
+# Measurements below are taken from the completed Scarlet customer report
+# (US Letter, points, measured from the top-left corner of the page).
+LEFT = 90
+RIGHT = 522
 TOP = PAGE_H - 72
 BOTTOM = 52
 
-NAVY = colors.HexColor("#183F58")
+NAVY = colors.HexColor("#184058")
 LIGHT_BLUE = colors.HexColor("#D5E8F0")
-RED = colors.HexColor("#D93645")
-TEXT = colors.HexColor("#111111")
+RED = colors.HexColor("#DC3545")
+UNUSUAL_FILL = colors.HexColor("#FFCCCC")
+TEXT = colors.HexColor("#000000")
+
+# Liberation Sans shares Arial's metrics, so lines wrap exactly where the
+# reference report (set in Arial) wraps. Helvetica is the fallback.
+BODY, BOLD, ITALIC, BOLD_ITALIC = "Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique"
+_liberation = {
+    "Arial": "LiberationSans-Regular.ttf",
+    "Arial-Bold": "LiberationSans-Bold.ttf",
+    "Arial-Italic": "LiberationSans-Italic.ttf",
+    "Arial-BoldItalic": "LiberationSans-BoldItalic.ttf",
+}
+try:
+    for _name, _file in _liberation.items():
+        pdfmetrics.registerFont(TTFont(_name, str(ASSET_DIR / "fonts" / _file)))
+    BODY, BOLD, ITALIC, BOLD_ITALIC = _liberation
+except Exception:
+    pass
+BODY_SIZE = 11
+LEADING = 14.6
+PARAGRAPH_GAP = 10
+
+HEADING_FONT = "Helvetica-Bold"
+_bebas = ASSET_DIR / "fonts" / "BebasNeue-Regular.ttf"
+if _bebas.exists():
+    try:
+        pdfmetrics.registerFont(TTFont("BebasNeue", str(_bebas)))
+        HEADING_FONT = "BebasNeue"
+    except Exception:
+        pass
 
 
 def _date_text(value) -> str:
@@ -33,7 +65,8 @@ def _date_text(value) -> str:
 
 
 def _safe_text(value) -> str:
-    return str(value or "").replace("\u2014", "-").replace("\u2013", "-")
+    # Helvetica covers the em dash; only normalise characters it lacks.
+    return str(value or "").replace("\u2013", "-").replace("\u200b", "")
 
 
 def _photos(value) -> list[dict]:
@@ -78,89 +111,111 @@ def _draw_contain(c: canvas.Canvas, content, x: float, y: float, w: float, h: fl
         return
 
 
+def _y(top: float, size: float = BODY_SIZE) -> float:
+    """Baseline for text whose glyph box starts ``top`` points below the page top."""
+    return PAGE_H - top - 0.86 * size
+
+
 def _tdlr_mark(c: canvas.Canvas):
     mark = ASSET_DIR / "Azeem_TDLR_Signature.png"
     if mark.exists():
-        _draw_contain(c, str(mark), PAGE_W - 62, PAGE_H - 58, 42, 42)
-
-
-def _cover_header(c: canvas.Canvas):
-    logo = ASSET_DIR / "MTAR_logo.png"
-    if logo.exists():
-        _draw_contain(c, str(logo), LEFT, PAGE_H - 140, 195, 85)
-
-    _tdlr_mark(c)
-    c.setFillColor(TEXT)
-    c.setFont("Helvetica", 10)
-    y = PAGE_H - 82
-    for line in [
-        "Mold Testing and Removal",
-        "2031 John West Rd. #119",
-        "Dallas, TX 75228",
-        "(817) 718-5086",
-        "help@moldtestingandremoval.com",
-    ]:
-        c.drawRightString(PAGE_W - LEFT, y, line)
-        y -= 13
-
-
-def _header(c: canvas.Canvas):
-    # Interior pages in the Scarlet reference use the small TDLR mark only.
-    _tdlr_mark(c)
+        _draw_contain(c, str(mark), 554, PAGE_H - 57, 50, 49)
 
 
 def _footer(c: canvas.Canvas, page_no: int):
     c.setFillColor(TEXT)
-    c.setFont("Helvetica", 9)
-    c.drawCentredString(PAGE_W / 2, 24, str(page_no))
+    c.setFont(BODY, BODY_SIZE)
+    c.drawCentredString(PAGE_W / 2, _y(742), str(page_no))
 
 
-def _section_title(c: canvas.Canvas, text: str, y: float, size: float = 16) -> float:
+def _heading(c: canvas.Canvas, text: str, top: float, size: float = 17, *, center: bool = False) -> float:
+    """Draw a navy section heading; returns the top of the next line."""
     c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", size)
-    c.drawString(LEFT, y, _safe_text(text).upper())
-    return y - size - 5
+    c.setFont(HEADING_FONT, size)
+    text = _safe_text(text)
+    if HEADING_FONT != "BebasNeue":
+        text = text.upper()
+    x = (PAGE_W - c.stringWidth(text, HEADING_FONT, size)) / 2 if center else LEFT
+    # Fill plus a thin outline gives Bebas the heavier weight of the reference.
+    c.saveState()
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(size * 0.035)
+    heading = c.beginText(x, _y(top, size))
+    heading.setFont(HEADING_FONT, size)
+    heading.setTextRenderMode(2)
+    heading.textOut(text)
+    c.drawText(heading)
+    c.restoreState()
+    return top + size + 7
 
 
-def _wrap_lines(text: str, width_chars: int = 92) -> list[str]:
-    lines: list[str] = []
-    for paragraph in _safe_text(text).splitlines() or [""]:
-        if not paragraph:
-            lines.append("")
-        else:
-            lines.extend(wrap(paragraph, width=max(20, width_chars), break_long_words=False))
+def _rich_lines(c: canvas.Canvas, runs: list[tuple[str, str]], width: float, size: float) -> list[list[tuple[str, str]]]:
+    """Greedy word wrap of (text, font) runs into lines of runs."""
+    words: list[tuple[str, str]] = []
+    for text, font in runs:
+        for index, word in enumerate(_safe_text(text).split(" ")):
+            if word == "" and index:
+                continue
+            words.append((word, font))
+    lines: list[list[tuple[str, str]]] = [[]]
+    used = 0.0
+    for word, font in words:
+        if not word:
+            continue
+        space = c.stringWidth(" ", BODY, size) if lines[-1] else 0
+        word_w = c.stringWidth(word, font, size)
+        if lines[-1] and used + space + word_w > width:
+            lines.append([])
+            used, space = 0.0, 0
+        lines[-1].append((word, font))
+        used += space + word_w
     return lines
 
 
-def _paragraph(
+def _rich(
     c: canvas.Canvas,
-    text: str,
-    y: float,
+    runs: list[tuple[str, str]] | str,
+    top: float,
     *,
     x: float = LEFT,
-    width_chars: int = 92,
-    font: str = "Helvetica",
-    size: float = 10,
-    leading: float = 13,
-    bold_prefix: str | None = None,
+    width: float | None = None,
+    size: float = BODY_SIZE,
+    leading: float = LEADING,
+    color=TEXT,
+    colors_by_font: dict | None = None,
 ) -> float:
-    c.setFillColor(TEXT)
-    if bold_prefix and _safe_text(text).startswith(bold_prefix):
-        c.setFont("Helvetica-Bold", size)
-        c.drawString(x, y, bold_prefix)
-        offset = c.stringWidth(bold_prefix, "Helvetica-Bold", size)
-        c.setFont(font, size)
-        remainder = _safe_text(text)[len(bold_prefix):]
-        # For short labeled lines, keep the remainder on the same line.
-        if len(remainder) < width_chars - len(bold_prefix):
-            c.drawString(x + offset, y, remainder)
-            return y - leading
+    """Draw wrapped text made of differently styled runs; returns the next top."""
+    if isinstance(runs, str):
+        runs = [(runs, BODY)]
+    # Half a point of slack reproduces the reference's line breaks exactly.
+    width = width if width is not None else RIGHT - x + 0.5
+    for line in _rich_lines(c, runs, width, size):
+        cursor = x
+        baseline = _y(top, size)
+        for index, (word, font) in enumerate(line):
+            if index:
+                cursor += c.stringWidth(" ", BODY, size)
+            c.setFillColor((colors_by_font or {}).get(font, color))
+            c.setFont(font, size)
+            c.drawString(cursor, baseline, word)
+            cursor += c.stringWidth(word, font, size)
+        top += leading
+    return top
 
-    c.setFont(font, size)
-    for line in _wrap_lines(text, width_chars):
-        c.drawString(x, y, line)
-        y -= leading
-    return y
+
+def _labeled(text: str, *, label_font: str = BOLD) -> list[tuple[str, str]]:
+    """Split "Label: body" into a bold label run and a regular body run."""
+    text = _safe_text(text)
+    label, sep, rest = text.partition(":")
+    if sep and len(label) <= 40 and rest:
+        return [(label + ":", label_font), (rest, BODY)]
+    return [(text, BODY)]
+
+
+def _bullet(c: canvas.Canvas, runs, top: float, *, size: float = BODY_SIZE) -> float:
+    c.setFillColor(TEXT)
+    c.circle(LEFT + 3.2, _y(top, size) + size * 0.32, 2.6, stroke=0, fill=1)
+    return _rich(c, runs, top, x=LEFT + 18, size=size)
 
 
 def _new_page(c: canvas.Canvas, page_no: int, *, header: bool = False) -> tuple[int, float]:
@@ -169,33 +224,38 @@ def _new_page(c: canvas.Canvas, page_no: int, *, header: bool = False) -> tuple[
         c.showPage()
     page_no += 1
     if header:
-        _header(c)
-        return page_no, PAGE_H - 160
+        _tdlr_mark(c)
     return page_no, TOP
 
 
-def _photo_grid(
-    c: canvas.Canvas,
-    entries: list[dict],
-    y_top: float,
-    *,
-    cols: int = 3,
-    cell_h: float = 118,
-    max_rows: int = 4,
-) -> tuple[float, int]:
+PHOTO = 140      # square photo cell
+PHOTO_GAP = 4    # horizontal gap between photos
+ROW_PITCH = 146  # vertical distance between photo rows
+THERMAL_W, THERMAL_H = 208, 279
+
+
+def _photo_row(c: canvas.Canvas, entries: list[dict], top: float, *, size: float = PHOTO) -> float:
+    """Draw up to three photos centred as a row; returns the bottom (top coords)."""
+    entries = entries[:3]
     if not entries:
-        return y_top, 0
-    gap = 3
-    grid_w = RIGHT - LEFT
-    cell_w = (grid_w - gap * (cols - 1)) / cols
-    count = min(len(entries), cols * max_rows)
-    for idx, entry in enumerate(entries[:count]):
-        row, col = divmod(idx, cols)
-        x = LEFT + col * (cell_w + gap)
-        y = y_top - (row + 1) * cell_h - row * gap
-        _draw_contain(c, entry.get("content"), x, y, cell_w, cell_h)
-    rows = (count + cols - 1) // cols
-    return y_top - rows * cell_h - max(0, rows - 1) * gap, count
+        return top
+    total = len(entries) * size + (len(entries) - 1) * PHOTO_GAP
+    x = (PAGE_W - total) / 2 if len(entries) < 3 else 92
+    for entry in entries:
+        _draw_contain(c, entry.get("content"), x, PAGE_H - top - size, size, size)
+        x += size + PHOTO_GAP
+    return top + size
+
+
+def _photo_grid(c: canvas.Canvas, entries: list[dict], top: float, *, max_rows: int) -> tuple[float, int]:
+    """Three-column grid starting at ``top``; returns (bottom, photos used)."""
+    count = min(len(entries), 3 * max_rows)
+    for index, entry in enumerate(entries[:count]):
+        row, col = divmod(index, 3)
+        x = 92 + col * (PHOTO + PHOTO_GAP)
+        _draw_contain(c, entry.get("content"), x, PAGE_H - top - row * ROW_PITCH - PHOTO, PHOTO, PHOTO)
+    rows = (count + 2) // 3
+    return top + rows * ROW_PITCH - (ROW_PITCH - PHOTO if rows else 0), count
 
 
 def _sample_for_area(job: dict, area_id: str) -> dict | None:
@@ -209,7 +269,26 @@ def _outdoor_sample(job: dict) -> dict | None:
 def _sample_label(sample: dict | None) -> str:
     if not sample:
         return ""
-    return sample.get("lab_coc_line") or sample.get("name") or ""
+    line = sample.get("lab_coc_line") or ""
+    if line:
+        # The customer report spaces the COC line as "2030805 - 1".
+        return " - ".join(part.strip() for part in line.split("-", 1))
+    return sample.get("name") or ""
+
+
+def _sample_caption(c: canvas.Canvas, title: str, sample: dict | None, top: float) -> float:
+    c.setFillColor(TEXT)
+    c.setFont(BOLD, BODY_SIZE)
+    c.drawCentredString(PAGE_W / 2, _y(top), _safe_text(title).upper())
+    top += LEADING
+    label, value = "COC / LINE #: ", _sample_label(sample)
+    total = c.stringWidth(label, ITALIC, BODY_SIZE) + c.stringWidth(value, BOLD_ITALIC, BODY_SIZE)
+    x = (PAGE_W - total) / 2
+    c.setFont(ITALIC, BODY_SIZE)
+    c.drawString(x, _y(top), label)
+    c.setFont(BOLD_ITALIC, BODY_SIZE)
+    c.drawString(x + c.stringWidth(label, ITALIC, BODY_SIZE), _y(top), value)
+    return top + LEADING + 2
 
 
 def _letter_finding(area: dict) -> str:
@@ -220,50 +299,58 @@ def _letter_finding(area: dict) -> str:
 
 
 def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
-    _cover_header(c)
-    c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawCentredString(PAGE_W / 2, PAGE_H - 178, "MOLD ASSESSMENT REPORT")
+    logo = ASSET_DIR / "MTAR_logo.png"
+    if logo.exists():
+        _draw_contain(c, str(logo), 72, PAGE_H - 135, 210, 81)
+    _tdlr_mark(c)
+
+    c.setFillColor(TEXT)
+    c.setFont(BODY, BODY_SIZE)
+    top = 72
+    for line in [
+        "Mold Testing and Removal",
+        "2031 John West Rd. #119",
+        "Dallas, TX 75228",
+        "(817) 718-5086",
+        "help@moldtestingandremoval.com",
+    ]:
+        c.drawRightString(525, _y(top), line)
+        top += LEADING
+
+    _heading(c, "Mold Assessment Report", 158, 30, center=True)
 
     property_photos = _photos(photos.get("property"))
     if property_photos:
-        _draw_contain(c, property_photos[0].get("content"), 126, 250, 360, 360)
+        _draw_contain(c, property_photos[0].get("content"), 126, PAGE_H - 577, 360, 360)
 
-    y = 215
-    y = _section_title(c, "Client & Property:", y, 13)
+    _heading(c, "Client & Property:", 595, 15)
     c.setFillColor(TEXT)
-    c.setFont("Helvetica", 10)
+    c.setFont(BODY, BODY_SIZE)
+    top = 617
     for line in [
         job.get("client_name", ""),
         job.get("address", ""),
         f"{job.get('city', '')}, {job.get('state', '')} {job.get('zip', '')}".strip(),
     ]:
-        c.drawString(LEFT, y, _safe_text(line))
-        y -= 13
+        c.drawString(LEFT, _y(top), _safe_text(line))
+        top += LEADING
 
-    y -= 12
-    label_x = LEFT
-    value_x = LEFT + 150
-    c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(label_x, y, "ASSESSMENT DATE:")
-    c.setFillColor(TEXT)
-    c.setFont("Helvetica", 10)
-    c.drawString(value_x, y, _date_text(job.get("inspection_date")))
-    y -= 18
-    c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(label_x, y, "REPORT DATE:")
-    c.setFillColor(TEXT)
-    c.setFont("Helvetica", 10)
-    c.drawString(value_x, y, _date_text(job.get("report_date")))
+    for label, value, label_top in (
+        ("Assessment Date:", job.get("inspection_date"), 674),
+        ("Report Date:", job.get("report_date"), 695),
+    ):
+        _heading(c, label, label_top, 15)
+        shown = label if HEADING_FONT == "BebasNeue" else label.upper()
+        value_x = LEFT + c.stringWidth(shown, HEADING_FONT, 15) + 4
+        c.setFillColor(TEXT)
+        c.setFont(BODY, BODY_SIZE)
+        c.drawString(value_x, _y(label_top + 4), _date_text(value))
     _footer(c, page_no)
 
 
 def _draw_samples_page(c: canvas.Canvas, job: dict, page_no: int):
-    _header(c)
-    y = PAGE_H - 110
-    y = _section_title(c, "Samples Taken:", y, 15)
+    _tdlr_mark(c)
+    top = _heading(c, "Samples Taken:", 72, 15) - 1
     indoor_num = 0
     for sample in job.get("samples", []):
         if sample.get("outdoor_control"):
@@ -273,21 +360,20 @@ def _draw_samples_page(c: canvas.Canvas, job: dict, page_no: int):
             media = "Air Sample" if sample.get("type") == "Air Sample" else "Swab"
             location = sample.get("location") or sample.get("lab_location") or sample.get("name") or "Interior"
             line = f"Sample {indoor_num}: {media} taken at {location}"
-        y = _paragraph(c, line, y, size=11, leading=17)
+        top = _rich(c, line, top)
     _footer(c, page_no)
 
 
 def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
-    _header(c)
-    y = PAGE_H - 95
-    y = _paragraph(c, "State Licensed Mold Assessment Consultant:", y, font="Helvetica-Bold", size=10)
-    y = _paragraph(c, "Azeem Iqbal - TDLR MAC #2189", y, size=10)
-    y -= 8
-    y = _paragraph(c, "Report Date:", y, font="Helvetica-Bold", size=10)
-    y = _paragraph(c, _date_text(job.get("report_date")), y, size=10)
-    y -= 10
-    y = _paragraph(c, "To whom it may concern,", y, size=10)
-    y -= 6
+    _tdlr_mark(c)
+    top = 72
+    top = _rich(c, [("State Licensed Mold Assessment Consultant:", BOLD)], top)
+    top = _rich(c, "Azeem Iqbal — TDLR MAC #2189", top)
+    top += LEADING
+    top = _rich(c, [("Report Date:", BOLD)], top)
+    top = _rich(c, _date_text(job.get("report_date")), top)
+    top += LEADING
+    top = _rich(c, "To whom it may concern,", top) + PARAGRAPH_GAP
 
     address = f"{job.get('address', '')}, {job.get('city', '')}, {job.get('state', '')} {job.get('zip', '')}"
     paragraphs = [
@@ -295,76 +381,73 @@ def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
         "The assessment included a visual inspection, moisture mapping using a Protimeter Moisture Meter, and the collection of bioaerosol (air) and surface (swab) samples. Samples were collected from the interior of the property and the exterior for control purposes.",
         "The samples were sent to PRO-LAB, an accredited laboratory, for viable mold/fungi analysis.",
     ]
-    for p in paragraphs:
-        y = _paragraph(c, p, y, size=10, leading=13)
-        y -= 7
+    for paragraph in paragraphs:
+        top = _rich(c, paragraph, top) + PARAGRAPH_GAP
 
     outcome = job.get("report_outcome", "Pending consultant review")
     if outcome == "Mold remediation required":
-        y = _paragraph(c, "Based on the laboratory results and visual inspection, active mold growth was confirmed in the following areas:", y, size=10)
-        for area in job.get("areas", []):
-            y = _paragraph(c, f"- {area.get('name', '')} - {_letter_finding(area)}", y, x=LEFT + 12, size=10)
-        y -= 5
-        y = _paragraph(
+        top = _rich(
             c,
-            "This letter serves as official notification that professional mold remediation is required to return the property to a normal fungal ecology (Condition 1). The property should be remediated by a State Licensed Mold Remediation Contractor (MRC) in accordance with the Texas Mold Assessment and Remediation Rules (TMARR).",
-            y,
-            font="Helvetica-Bold",
-            size=10,
+            [
+                ("Based on the laboratory results and visual inspection,", BODY),
+                ("active mold growth was confirmed", BOLD_ITALIC),
+                ("in the following areas:", BODY),
+            ],
+            top,
+        ) + PARAGRAPH_GAP
+        for area in job.get("areas", []):
+            top = _bullet(c, f"{area.get('name', '')} — {_letter_finding(area)}", top)
+        top += PARAGRAPH_GAP
+        top = _rich(
+            c,
+            [("This letter serves as official notification that professional mold remediation is required to return the property to a normal fungal ecology (Condition 1). The property should be remediated by a State Licensed Mold Remediation Contractor (MRC) in accordance with the Texas Mold Assessment and Remediation Rules (TMARR).", BOLD)],
+            top,
         )
     else:
-        y = _paragraph(
+        top = _rich(
             c,
-            "DRAFT - CONSULTANT REVIEW REQUIRED. Laboratory data has been imported automatically. The licensed Mold Assessment Consultant must review inspection observations, moisture conditions, photographs, and the final report conclusion before release.",
-            y,
-            font="Helvetica-Bold",
-            size=10,
+            [("DRAFT - CONSULTANT REVIEW REQUIRED. Laboratory data has been imported automatically. The licensed Mold Assessment Consultant must review inspection observations, moisture conditions, photographs, and the final report conclusion before release.", BOLD)],
+            top,
         )
 
-    y -= 18
-    y = _paragraph(c, "Sincerely,", y, size=10)
+    top += 2 * LEADING + 5
+    top = _rich(c, "Sincerely,", top) + PARAGRAPH_GAP
+    top = _rich(c, [("Azeem Iqbal", BOLD)], top, size=12)
     sig = ASSET_DIR / "Signature.png"
     if sig.exists():
-        _draw_contain(c, str(sig), LEFT, y - 55, 90, 48)
-        y -= 58
-    y = _paragraph(c, "Azeem Iqbal", y, font="Helvetica-Bold", size=10)
-    y = _paragraph(c, "State of Texas Licensed Mold Assessment Consultant", y, size=9)
-    _paragraph(c, "TDLR MAC #2189 (Exp. 10/24/2027)", y, size=9)
+        _draw_contain(c, str(sig), 92, PAGE_H - top - 48, 64, 45)
+    top += 52
+    top = _rich(c, "State of Texas Licensed Mold Assessment Consultant", top)
+    _rich(c, "TDLR MAC #2189 (Exp. 10/24/2027)", top)
     _footer(c, page_no)
 
 
 def _draw_outdoor_page(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
-    _header(c)
-    y = PAGE_H - 105
-    y = _section_title(c, "Outdoor Control Sample", y, 15)
-    y = _paragraph(c, "An air sample is taken outside to serve as a baseline for all other air samples to be compared against.", y, size=10)
-    y -= 12
+    _tdlr_mark(c)
+    top = _heading(c, "Outdoor Control Sample", 96)
+    top = _rich(c, "An air sample is taken outside to serve as a baseline for all other air samples to be compared against.", top)
+    top = _sample_caption(c, "Outdoor Control Sample", _outdoor_sample(job), top + PARAGRAPH_GAP)
 
-    outdoor = _outdoor_sample(job)
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(TEXT)
-    c.drawCentredString(PAGE_W / 2, y, "OUTDOOR CONTROL SAMPLE")
-    y -= 15
-    c.setFont("Helvetica-BoldOblique", 10)
-    c.drawCentredString(PAGE_W / 2, y, f"COC / LINE #: {_sample_label(outdoor)}")
-    y -= 10
+    top = _photo_row(c, _photos(photos.get("outdoor"))[:3], top + 2)
+    top = _heading(c, "Visual Observations & Moisture Readings", top + 13)
 
-    outdoor_photos = _photos(photos.get("outdoor"))
-    y, _ = _photo_grid(c, outdoor_photos[:3], y, cols=3, cell_h=140, max_rows=1)
-    y -= 20
-
-    y = _section_title(c, "Visual Observations & Moisture Readings", y, 14)
     humidity = job.get("humidity")
     if humidity is None:
-        env = "Environmental Conditions: Indoor relative humidity (rH) was not entered. Consultant review required."
+        runs = [("Environmental Conditions:", BOLD), ("Indoor relative humidity (rH) was not entered. Consultant review required.", BODY)]
     else:
-        status = "within the recommended range (30-50%)" if humidity <= 50 else "above the recommended range (30-50%)"
-        env = f"Environmental Conditions: The indoor relative humidity (rH) was recorded at {humidity}%, which is {status}."
-    y = _paragraph(c, env, y, size=10)
+        value = f"{humidity:g}" if isinstance(humidity, (int, float)) else str(humidity)
+        status = "within the recommended range (30-50%)" if float(humidity) <= 50 else "above the recommended range (30-50%)"
+        runs = [
+            ("Environmental Conditions:", BOLD),
+            ("The indoor relative humidity (rH) was recorded at", BODY),
+            (f"{value}%,", BOLD),
+            (f"which is {status}.", BODY),
+        ]
+    top = _rich(c, runs, top)
 
     environment_photos = _photos(photos.get("environment"))
     if environment_photos:
-        _draw_contain(c, environment_photos[0].get("content"), 236, max(80, y - 155), 140, 145)
+        _photo_row(c, environment_photos[:1], top + 12)
     _footer(c, page_no)
 
 
@@ -388,57 +471,44 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
         sample = _sample_for_area(job, area.get("id"))
 
         page_no += 1
-        _header(c)
-        y = PAGE_H - 105
-        y = _section_title(c, area.get("name", "Inspection Area"), y, 15)
+        _tdlr_mark(c)
+        top = _heading(c, area.get("name", "Inspection Area"), 72)
         if area.get("lab_summary"):
-            y = _paragraph(c, area["lab_summary"], y, size=10)
+            top = _rich(c, _labeled(area["lab_summary"]), top)
         if area.get("description"):
-            y = _paragraph(c, f"Visual Observations: {area['description']}", y, size=10)
-        y -= 8
-        c.setFillColor(TEXT)
-        c.setFont("Helvetica-Bold", 12)
-        c.drawCentredString(PAGE_W / 2, y, _safe_text(area.get("name", "")).upper())
-        y -= 15
-        c.setFont("Helvetica-BoldOblique", 10)
-        c.drawCentredString(PAGE_W / 2, y, f"COC / LINE #: {_sample_label(sample)}")
-        y -= 8
+            top = _rich(c, [("Visual Observations:", BOLD), (area["description"], BODY)], top)
+        top = _sample_caption(c, area.get("name", ""), sample, top + PARAGRAPH_GAP)
 
         if sampling:
-            y, _ = _photo_grid(c, sampling[:3], y, cols=3, cell_h=140, max_rows=1)
-            y -= 15
+            top = _photo_row(c, sampling[:3], top + 2) + 14
 
         moisture = area.get("moisture_notes") or "Moisture assessment not entered. Consultant review required."
-        y = _paragraph(c, f"Moisture Assessment: {moisture}", y, size=10)
-        y -= 10
+        top = _rich(c, [("Moisture Assessment:", BOLD), (moisture, BODY)], top) + 12
 
-        remaining = inspection[:]
-        y, used = _photo_grid(c, remaining, y, cols=3, cell_h=140, max_rows=2)
-        remaining = remaining[used:]
+        rows_left = max(0, int((PAGE_H - BOTTOM - 40 - top + (ROW_PITCH - PHOTO)) // ROW_PITCH))
+        _, used = _photo_grid(c, inspection, top, max_rows=min(rows_left, 4))
+        remaining = inspection[used:]
         _footer(c, page_no)
 
         while remaining:
             c.showPage()
             page_no += 1
-            _header(c)
-            y = PAGE_H - 95
-            y, used = _photo_grid(c, remaining, y, cols=3, cell_h=140, max_rows=4)
+            _tdlr_mark(c)
+            _, used = _photo_grid(c, remaining, 74, max_rows=4)
             remaining = remaining[used:]
             _footer(c, page_no)
 
         if thermal:
             c.showPage()
             page_no += 1
-            _header(c)
-            y = PAGE_H - 105
-            y = _paragraph(
-                c,
-                area.get("thermal_notes") or "Thermal Imaging: Consultant review required before final release.",
-                y,
-                size=10,
-            )
-            y -= 12
-            _photo_grid(c, thermal, y, cols=2, cell_h=230, max_rows=2)
+            _tdlr_mark(c)
+            notes = area.get("thermal_notes") or "Thermal Imaging: Consultant review required before final release."
+            _rich(c, _labeled(notes), 72)
+            for index, entry in enumerate(thermal[:4]):
+                row, col = divmod(index, 2)
+                x = 92 + col * (THERMAL_W + 3)
+                y_top = 113 + row * (THERMAL_H + 5)
+                _draw_contain(c, entry.get("content"), x, PAGE_H - y_top - THERMAL_H, THERMAL_W, THERMAL_H)
             _footer(c, page_no)
 
         c.showPage()
@@ -446,7 +516,6 @@ def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) ->
 
 
 def _air_summary_rows(job: dict) -> list[tuple[str, str, str, str]]:
-    samples = {s["id"]: s for s in job.get("samples", [])}
     rows = []
     # Match the customer-report summary: one useful comparison row per
     # sample/fungal type, prioritizing Penicillium/Aspergillus.
@@ -463,138 +532,99 @@ def _air_summary_rows(job: dict) -> list[tuple[str, str, str, str]]:
     return rows
 
 
-def _draw_table(c: canvas.Canvas, x: float, y: float, widths: list[float], headers: list[str], rows: list[tuple], row_h: float = 18) -> float:
-    total_w = sum(widths)
-    c.setStrokeColor(colors.black)
+def _draw_table(c: canvas.Canvas, top: float, widths: list[float], headers: list[str], rows: list[tuple]) -> float:
+    """Bordered table in the reference style; returns the bottom (top coords)."""
+    x0, pad, line_h = 84, 6, 12.5
+    edges = [x0]
+    for width in widths:
+        edges.append(edges[-1] + width)
+
+    def cell_lines(text: str, width: float, font: str) -> list[str]:
+        return [" ".join(w for w, _ in line) for line in _rich_lines(c, [(text, font)], width - 2 * pad, BODY_SIZE)] or [""]
+
     c.setLineWidth(0.6)
+    c.setStrokeColor(colors.black)
+    header_h = 14
     c.setFillColor(LIGHT_BLUE)
-    c.rect(x, y - row_h, total_w, row_h, fill=1, stroke=1)
-    cx = x
-    for idx, (header, width) in enumerate(zip(headers, widths)):
-        if idx:
-            c.line(cx, y, cx, y - row_h * (len(rows) + 1))
+    c.rect(x0, PAGE_H - top - header_h, edges[-1] - x0, header_h, fill=1, stroke=0)
+    for header, left in zip(headers, edges):
         c.setFillColor(TEXT)
-        c.setFont("Helvetica-Bold", 8.5)
-        c.drawString(cx + 4, y - 12, header)
-        cx += width
+        c.setFont(BOLD, BODY_SIZE)
+        c.drawString(left + pad, _y(top + 1), header)
+    row_top = top + header_h
 
-    current_y = y - row_h
     for row in rows:
-        current_y -= row_h
-        c.setFillColor(colors.white)
-        c.rect(x, current_y, total_w, row_h, fill=1, stroke=1)
-        cx = x
-        for idx, (value, width) in enumerate(zip(row, widths)):
-            value_text = _safe_text(value)
-            unusual = "UNUSUAL" in value_text.upper() or "MOLD PRESENT" in value_text.upper()
+        styled = []
+        for value, width in zip(row, widths):
+            text = _safe_text(value)
+            unusual = "UNUSUAL" in text.upper() or "MOLD PRESENT" in text.upper()
+            font = BOLD if unusual else BODY
+            styled.append((cell_lines(text, width, font), font, unusual))
+        height = max(len(lines) for lines, _, _ in styled) * line_h + 1.5
+        for (lines, font, unusual), left, right in zip(styled, edges, edges[1:]):
             if unusual:
-                c.setFillColor(colors.HexColor("#F7D7DC"))
-                c.rect(cx, current_y, width, row_h, fill=1, stroke=1)
-            elif idx:
-                c.line(cx, current_y + row_h, cx, current_y)
+                c.setFillColor(UNUSUAL_FILL)
+                c.rect(left, PAGE_H - row_top - height, right - left, height, fill=1, stroke=0)
             c.setFillColor(RED if unusual else TEXT)
-            c.setFont("Helvetica-Bold" if unusual else "Helvetica", 8.5)
-            c.drawString(cx + 4, current_y + 5, value_text[:44])
-            cx += width
-    return current_y
+            c.setFont(font, BODY_SIZE)
+            for index, line in enumerate(lines):
+                c.drawString(left + pad, _y(row_top + index * line_h), line)
+        c.line(x0, PAGE_H - row_top, edges[-1], PAGE_H - row_top)
+        row_top += height
 
-
-def _draw_mold_entry(
-    c: canvas.Canvas,
-    mold_type: str,
-    description: str,
-    dangerous: bool,
-    y: float,
-) -> float:
-    size = 8.6
-    leading = 11
-    label = f"{mold_type}: "
-    c.setFont("Helvetica-Bold", size)
-    c.setFillColor(RED if dangerous else TEXT)
-    c.drawString(LEFT, y, label)
-    label_w = c.stringWidth(label, "Helvetica-Bold", size)
-
-    words = _safe_text(description).split()
-    lines: list[str] = []
-    current = ""
-    first_limit = RIGHT - (LEFT + label_w)
-    full_limit = RIGHT - LEFT
-
-    for word in words:
-        trial = word if not current else current + " " + word
-        limit = first_limit if not lines else full_limit
-        if c.stringWidth(trial, "Helvetica", size) <= limit:
-            current = trial
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-
-    c.setFillColor(TEXT)
-    c.setFont("Helvetica", size)
-    if lines:
-        c.drawString(LEFT + label_w, y, lines[0])
-        for line in lines[1:]:
-            y -= leading
-            c.drawString(LEFT, y, line)
-    return y - leading
+    # Outer frame, column rules and the closing rule.
+    c.setStrokeColor(colors.black)
+    c.line(x0, PAGE_H - top, edges[-1], PAGE_H - top)
+    c.line(x0, PAGE_H - row_top, edges[-1], PAGE_H - row_top)
+    for edge in edges:
+        c.line(edge, PAGE_H - top, edge, PAGE_H - row_top)
+    return row_top
 
 
 def _draw_lab_page(c: canvas.Canvas, job: dict, page_no: int):
-    _header(c)
-    y = PAGE_H - 105
-    y = _section_title(c, "Laboratory Results Analysis", y, 15)
-    y = _paragraph(c, "Samples were submitted to PRO-LAB (an accredited laboratory) for analysis. The following summarizes the findings compared to the outdoor control sample.", y, size=10)
-    y -= 10
+    _tdlr_mark(c)
+    top = _heading(c, "Laboratory Results Analysis", 72)
+    top = _rich(c, "Samples were submitted to PRO-LAB (an accredited laboratory) for analysis. The following summarizes the findings compared to the outdoor control sample.", top)
 
-    y = _section_title(c, "Air Sample Comparison (Bioaerosol)", y, 13)
-    rows = _air_summary_rows(job)
-    y = _draw_table(c, LEFT, y, [105, 190, 75, 115], ["Location", "Fungal Type", "Spores/m³", "Interpretation"], rows)
-    y -= 28
+    top = _heading(c, "Air Sample Comparison (Bioaerosol)", top + 9)
+    top = _draw_table(c, top, [109, 133, 83, 108], ["Location", "Fungal Type", "Spores/m³", "Interpretation"], _air_summary_rows(job))
 
     surface_rows = []
     samples = {s["id"]: s for s in job.get("samples", [])}
     for row in job.get("surface_lab_rows", []):
         sample = samples.get(row.get("sample_id"), {})
-        surface_rows.append((
-            sample.get("location") or sample.get("name") or "",
-            "Swab",
-            row.get("result", ""),
-        ))
+        surface_rows.append((sample.get("location") or sample.get("name") or "", "Swab", row.get("result", "")))
     if surface_rows:
-        y = _section_title(c, "Surface Sample Results (Swab)", y, 13)
-        y = _draw_table(c, LEFT, y, [175, 140, 170], ["Location", "Sample Type", "Result"], surface_rows)
-        y -= 26
+        top = _heading(c, "Surface Sample Results (Swab)", top + 25)
+        top = _draw_table(c, top, [144, 144, 150], ["Location", "Sample Type", "Result"], surface_rows)
 
-    y = _section_title(c, "Mold Types Identified", y, 13)
+    top = _heading(c, "Mold Types Identified", top + 25)
     for mold_type in job.get("mold_types", []):
         description, dangerous = MOLD_DESCRIPTIONS.get(mold_type, ("", False))
         if not description:
             continue
-        y = _draw_mold_entry(c, mold_type, description, dangerous, y)
-        y -= 4
-        if y < 70:
+        if top > PAGE_H - BOTTOM - 3 * LEADING:
             break
+        top = _rich(
+            c,
+            [(f"{mold_type}:", BOLD), (description, BODY)],
+            top,
+            colors_by_font={BOLD: RED} if dangerous else None,
+        ) + PARAGRAPH_GAP
     _footer(c, page_no)
 
 
 def _draw_conclusions(c: canvas.Canvas, job: dict, page_no: int):
-    _header(c)
-    y = PAGE_H - 105
-    y = _section_title(c, "Conclusions", y, 15)
-    y = _paragraph(c, "Based on the visual inspection, moisture readings, and laboratory results, the following conclusions are made:", y, size=10)
-    y -= 8
+    _tdlr_mark(c)
+    top = _heading(c, "Conclusions", 72)
+    top = _rich(c, "Based on the visual inspection, moisture readings, and laboratory results, the following conclusions are made:", top) + PARAGRAPH_GAP
     for idx, area in enumerate(job.get("areas", []), 1):
-        y = _paragraph(c, f"{idx}. {area.get('name', '')}: {area.get('finding', '')}.", y, size=10)
-        y -= 6
+        top = _rich(c, [(f"{idx}. {area.get('name', '')}:", BOLD), (f"{area.get('finding', '')}.", BODY)], top) + PARAGRAPH_GAP
 
-    y -= 12
-    y = _section_title(c, "Recommendations", y, 15)
+    top = _heading(c, "Recommendations", top + 24)
     outcome = job.get("report_outcome", "Pending consultant review")
     if outcome == "Mold remediation required":
-        y = _paragraph(c, "To return the property to a normal fungal ecology (Condition 1), the following remediation steps are recommended:", y, size=10)
+        top = _rich(c, "To return the property to a normal fungal ecology (Condition 1), the following remediation steps are recommended:", top) + PARAGRAPH_GAP
         recs = [
             ("Professional Remediation", "Hire a State Licensed Mold Remediation Contractor (MRC) to prepare a work plan based on a Mold Remediation Protocol prepared by a TDLR Mold Assessment Consultant."),
             ("Containment", "Establish critical barriers (polyethylene sheeting) around affected areas to prevent spore dispersion. Establish negative air pressure."),
@@ -605,20 +635,18 @@ def _draw_conclusions(c: canvas.Canvas, job: dict, page_no: int):
         ]
     else:
         recs = [("Consultant Review", "Final remediation recommendations are withheld until the licensed consultant completes review.")]
-    y -= 6
     for title, body in recs:
-        y = _paragraph(c, f"- {title}: {body}", y, x=LEFT + 4, size=9.5, leading=12, width_chars=96)
-        y -= 4
+        top = _bullet(c, [(f"{title}:", BOLD), (body, BODY)], top)
 
-    y -= 8
-    _paragraph(c, "This report is generated in accordance with the Texas Mold Assessment and Remediation Rules (TMARR). Limitations: This inspection is limited to the areas accessible at the time of inspection.", y, font="Helvetica-Oblique", size=8.5)
+    top += 3 * LEADING - 7
+    top = _rich(c, [("This report is generated in accordance with the Texas Mold Assessment and Remediation Rules (TMARR).", ITALIC)], top, size=9, leading=12)
+    _rich(c, [("Limitations: This inspection is limited to the areas accessible at the time of inspection.", ITALIC)], top, size=9, leading=12)
     _footer(c, page_no)
 
 
 def _draw_terms(c: canvas.Canvas, page_no: int):
-    _header(c)
-    y = PAGE_H - 105
-    y = _section_title(c, "Terms and Conditions", y, 15)
+    _tdlr_mark(c)
+    top = _heading(c, "Terms and Conditions", 72)
     terms = [
         ("Inspection Limitation", "This inspection and the information set forth in the report is provided solely for the purpose of verifying that certain structural or physical characteristics exist at the Location Address listed. The undersigned and company representative does not make a health or safety certification or warranty, express or implied, of any kind."),
         ("Limitation of Liability", "The Client agrees that Inspector's liability for errors and/or omissions shall be limited to the maximum of a full refund of the fee paid for the inspection. The Client agrees to assume all risk of loss which exceeds the fee paid."),
@@ -627,25 +655,20 @@ def _draw_terms(c: canvas.Canvas, page_no: int):
         ("Report Usage", "This report is prepared exclusively for the named client and may not be reproduced or distributed to third parties without written consent from Mold Testing and Removal."),
     ]
     for title, body in terms:
-        y = _paragraph(c, f"{title}: {body}", y, size=9, leading=12, width_chars=98)
-        y -= 8
+        top = _rich(c, [(f"{title}:", BOLD), (body, BODY)], top, size=10, leading=13) + 10
 
-    y -= 16
-    c.setFont("Helvetica-BoldOblique", 10)
-    c.drawCentredString(PAGE_W / 2, y, "- Laboratory Report Attached -")
-    y -= 18
-    c.setFont("Helvetica", 9)
-    c.drawCentredString(PAGE_W / 2, y, "PRO-LAB Certificate of Mold Analysis follows this page")
-    y -= 50
-    c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(PAGE_W / 2, y, "Mold Testing and Removal")
-    y -= 16
+    top += 26
     c.setFillColor(TEXT)
-    c.setFont("Helvetica", 9)
-    c.drawCentredString(PAGE_W / 2, y, "2031 John West Rd. #119 | Dallas, TX 75228")
-    y -= 13
-    c.drawCentredString(PAGE_W / 2, y, "(817) 718-5086 | help@moldtestingandremoval.com")
+    c.setFont(BOLD_ITALIC, BODY_SIZE)
+    c.drawCentredString(PAGE_W / 2, _y(top), "— Laboratory Report Attached —")
+    top += 24
+    c.setFont(BODY, BODY_SIZE)
+    c.drawCentredString(PAGE_W / 2, _y(top), "PRO-LAB Certificate of Mold Analysis follows this page")
+    top = _heading(c, "Mold Testing and Removal", top + 48, 20, center=True)
+    c.setFillColor(TEXT)
+    c.setFont(BODY, BODY_SIZE)
+    c.drawCentredString(PAGE_W / 2, _y(top + 2), "2031 John West Rd. #119 | Dallas, TX 75228")
+    c.drawCentredString(PAGE_W / 2, _y(top + 2 + LEADING), "(817) 718-5086 | help@moldtestingandremoval.com")
     _footer(c, page_no)
 
 
