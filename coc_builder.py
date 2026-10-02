@@ -75,9 +75,10 @@ def _as_bytes(pdf: bytes | bytearray | BinaryIO) -> bytes:
 
 
 def _sample_type_code(sample: dict) -> str:
-    explicit = _clean(sample.get("sample_type_code"))
+    explicit = _clean(sample.get("sample_type_code")).upper()
     if explicit:
-        return explicit.upper()
+        # Lab media names such as "SWAB" or "PRO-15" map to the COC's codes.
+        return SAMPLE_TYPE_CODES.get(explicit, explicit)
     for key in ("lab_sample_type", "type"):
         candidate = _clean(sample.get(key)).upper()
         if candidate in SAMPLE_TYPE_CODES:
@@ -257,7 +258,14 @@ def _set_text(fields: dict[str, fitz.Widget], name: str, value) -> None:
     widget = fields.get(name)
     if not widget or value is None:
         return
-    widget.field_value = str(value)
+    text = str(value)
+    widget.field_value = text
+    # Shrink long values (e.g. the company name) so they are not cut off.
+    fontsize = widget.text_fontsize or 10
+    available = widget.rect.width - 4
+    while fontsize > 6 and fitz.get_text_length(text, fontsize=fontsize) > available:
+        fontsize -= 0.5
+    widget.text_fontsize = fontsize
     widget.update()
 
 

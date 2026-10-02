@@ -110,3 +110,4 @@ The current storage design is suitable for initial testing and a single running 
 - `app.py` is the Streamlit UI: Lab Inbox dashboard, New Assessment, and one page per assessment with Overview, Inspection Areas, Samples, Photos, Lab Results, Report and Documents tabs.
 - `mtar_services.py` holds every workflow action the UI calls (Gmail intake, lab import, duplicate protection, photos, COC, draft and final reports), so the rules can be tested without a browser.
 - The final customer PDF is the generated assessment with the original PRO-LAB certificate appended unchanged.
+- `assets/BLANK_COC.pdf` is the blank PRO-LAB COC; MTAR fills it from the assessment (lab media such as SWAB or PRO-15 are written as the COC codes SW and P15).

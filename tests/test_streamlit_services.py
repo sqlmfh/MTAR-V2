@@ -90,6 +90,26 @@ class FinalPackageTests(unittest.TestCase):
             self.assertIn("page 2", doc[4].get_text())
 
 
+class BundledCocTemplateTests(unittest.TestCase):
+    def test_scarlet_samples_fill_the_bundled_coc(self):
+        from coc_builder import build_coc_payload, fill_coc_pdf
+        from prolab_parser import build_automated_job_from_prolab
+        from report_builder import MOLD_DESCRIPTIONS
+        from job_store import new_persistent_job
+
+        template = Path(__file__).resolve().parent.parent / "assets" / "BLANK_COC.pdf"
+        job = new_persistent_job()
+        build_automated_job_from_prolab(job, json.loads(FIXTURE.read_text(encoding="utf-8")), MOLD_DESCRIPTIONS.keys())
+        payload = build_coc_payload(job)
+        self.assertEqual([s["sample_type_code"] for s in payload["samples"]], ["P15", "P15", "SW"])
+
+        with fitz.open(stream=fill_coc_pdf(template.read_bytes(), payload), filetype="pdf") as doc:
+            values = {w.field_name: w.field_value for w in doc[0].widgets()}
+        self.assertEqual(values["Text Field 1"], "MOLD TESTING & REMOVAL LLC")
+        self.assertEqual(values["Text Field 90"], "Q2986725")
+        self.assertEqual(values["Text Field 142"], "SW")
+
+
 class StreamlitSmokeTests(unittest.TestCase):
     def test_dashboard_and_assessment_render(self):
         from streamlit.testing.v1 import AppTest
