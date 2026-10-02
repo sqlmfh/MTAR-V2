@@ -581,6 +581,7 @@ def add_photo(
     area_id: str | None = None,
     kind: str = "inspection",
     drive_file_id: str | None = None,
+    drive_path: str = "",
 ) -> dict:
     """Normalize and store one photo. A new property photo replaces the old one."""
     normalized = normalize_report_photo(raw)
@@ -592,7 +593,7 @@ def add_photo(
 
     token = uuid4().hex[:8]
     stem = Path(safe_filename(source_name, f"photo_{len(photos) + 1}.jpg")).stem
-    prefix = role if role in {"property", "outdoor", "environment"} else f"area_{area_id}"
+    prefix = role if role in {"property", "outdoor", "environment", "unsorted"} else f"area_{area_id}"
     filename = f"{prefix}_{token}_{stem}.jpg"
     documents.save_bytes(job["id"], "photos", filename, normalized)
     photos.append(
@@ -603,7 +604,7 @@ def add_photo(
             "area_id": area_id,
             "caption": "",
             "kind": kind,
-            **({"drive_file_id": drive_file_id} if drive_file_id else {}),
+            **({"drive_file_id": drive_file_id, "drive_path": drive_path} if drive_file_id else {}),
         }
     )
     return store.save(job)
@@ -614,6 +615,25 @@ def delete_photo(job: dict, photo_id: str) -> dict:
     if target:
         documents.delete(job["id"], "photos", target.get("filename", ""))
         job["photos"] = [p for p in job.get("photos", []) if p.get("id") != photo_id]
+    return store.save(job)
+
+
+def assign_photo(job: dict, photo_id: str, role: str, area_id: str | None = None) -> dict:
+    """File an unsorted photo under a report section."""
+    if role == "area" and not any(a.get("id") == area_id for a in job.get("areas", [])):
+        raise ValueError("Choose an inspection area for this photo.")
+    if role not in {"property", "outdoor", "environment", "area"}:
+        raise ValueError("Choose where this photo goes.")
+    target = next((p for p in job.get("photos", []) if p.get("id") == photo_id), None)
+    if not target:
+        raise ValueError("Photo not found.")
+    if role == "property":  # only one cover photo is kept
+        for existing in [p for p in job["photos"] if p.get("role") == "property" and p is not target]:
+            documents.delete(job["id"], "photos", existing.get("filename", ""))
+        job["photos"] = [p for p in job["photos"] if p.get("role") != "property" or p is target]
+    target["role"] = role
+    target["area_id"] = area_id if role == "area" else None
+    target["kind"] = {"outdoor": "sampling", "environment": "environment"}.get(role, "inspection")
     return store.save(job)
 
 

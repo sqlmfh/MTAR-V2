@@ -11,6 +11,7 @@ assessment. MTAR reads that folder and places each photo by its subfolder:
             Coat Closet/              -> inspection photos for that area
                 Sampling/             -> sampling photos for that area
                 Thermal/              -> thermal images for that area
+            IMG_0001.jpg              -> loose photos go to Unsorted; the user files them in MTAR
 
 Only the folder structure decides where a photo goes; MTAR never guesses
 from image content. Files already imported are skipped by Drive file ID.
@@ -159,7 +160,9 @@ def plan_job_photos(job: dict, client, folder_id: str) -> tuple[list[dict], list
     """Walk the assessment folder and decide each photo's slot.
 
     Returns (planned photos, unplaced file names). A planned photo is
-    {"file": drive item, "role", "area_name", "kind"}.
+    {"file": drive item, "role", "area_name", "kind", "path"}. Photos that sit
+    loose in the job folder, or in a subfolder MTAR does not recognise, get the
+    role "unsorted" so the user can pick their section in the app.
     """
     planned: list[dict] = []
     unplaced: list[str] = []
@@ -168,7 +171,8 @@ def plan_job_photos(job: dict, client, folder_id: str) -> tuple[list[dict], list
         name_key = _key(item.get("name"))
         if item.get("mimeType") != FOLDER_MIME:
             if _is_image(item):
-                unplaced.append(item.get("name", ""))
+                # Loose photos in the job folder go to Unsorted for the user to file.
+                planned.append({"file": item, "role": "unsorted", "area_name": None, "kind": "inspection", "path": ""})
             continue
 
         if name_key in PROPERTY_NAMES:
@@ -183,14 +187,19 @@ def plan_job_photos(job: dict, client, folder_id: str) -> tuple[list[dict], list
         for child in client.list_children(item["id"]):
             if child.get("mimeType") == FOLDER_MIME:
                 sub_kind = KIND_NAMES.get(_key(child.get("name")))
-                if role != "area" or not sub_kind:
-                    unplaced.append(f"{item['name']}/{child.get('name')}/")
-                    continue
+                path = f"{item['name']}/{child.get('name')}"
                 for grandchild in client.list_children(child["id"]):
-                    if _is_image(grandchild):
-                        planned.append({"file": grandchild, "role": "area", "area_name": item["name"], "kind": sub_kind})
+                    if not _is_image(grandchild):
+                        continue
+                    if role == "area" and sub_kind:
+                        planned.append({"file": grandchild, "role": "area", "area_name": item["name"], "kind": sub_kind, "path": path})
+                    else:
+                        planned.append({"file": grandchild, "role": "unsorted", "area_name": None, "kind": "inspection", "path": path})
             elif _is_image(child):
-                planned.append({"file": child, "role": role, "area_name": item["name"] if role == "area" else None, "kind": kind})
+                planned.append({
+                    "file": child, "role": role, "area_name": item["name"] if role == "area" else None,
+                    "kind": kind, "path": item["name"],
+                })
 
     return planned, unplaced
 
@@ -204,7 +213,7 @@ def sync_job_photos(
 ) -> tuple[dict, DriveSyncResult]:
     """Import new photos from the assessment's linked Drive folder.
 
-    ``add_photo(job, content, filename, role, area_id=, kind=, drive_file_id=)``
+    ``add_photo(job, content, filename, role, area_id=, kind=, drive_file_id=, drive_path=)``
     stores one photo and returns the saved job. ``add_area(job, name)`` creates
     an inspection area for a Drive folder that matches no existing area.
     """
@@ -213,7 +222,9 @@ def sync_job_photos(
     if not folder_id:
         return job, result
 
-    known = {photo.get("drive_file_id") for photo in job.get("photos", []) if photo.get("drive_file_id")}
+    # Remember every file ever imported, so a photo deleted in MTAR stays deleted.
+    known = set(job.get("drive_imported_ids", []))
+    known |= {photo.get("drive_file_id") for photo in job.get("photos", []) if photo.get("drive_file_id")}
     planned, result.unplaced = plan_job_photos(job, client, folder_id)
 
     # The newest-named property photo wins; only one cover photo is kept.
@@ -239,12 +250,13 @@ def sync_job_photos(
             content = client.download(file["id"])
             job = add_photo(
                 job, content, file.get("name", "photo.jpg"), item["role"],
-                area_id=area_id, kind=item["kind"], drive_file_id=file["id"],
+                area_id=area_id, kind=item["kind"], drive_file_id=file["id"], drive_path=item.get("path", ""),
             )
         except Exception as exc:
             result.errors.append(f"{file.get('name')}: {exc}")
             continue
         known.add(file["id"])
+        job.setdefault("drive_imported_ids", []).append(file["id"])
         result.imported += 1
 
     return job, result

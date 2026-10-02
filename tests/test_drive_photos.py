@@ -93,9 +93,9 @@ class DrivePhotoTests(unittest.TestCase):
 
                 job, result = mtar_services.sync_drive_photos(job)
                 self.assertEqual(job["drive_folder_id"], "job")
-                self.assertEqual(result["imported"], 7)
+                self.assertEqual(result["imported"], 8)
                 self.assertEqual(result["areas_created"], ["Attic"])
-                self.assertEqual(result["unplaced"], ["IMG_0001.jpg"])
+                self.assertEqual(result["unplaced"], [])
 
                 photos = job["photos"]
                 by_role = {}
@@ -109,10 +109,65 @@ class DrivePhotoTests(unittest.TestCase):
                 coat_kinds = sorted(p["kind"] for p in photos if p.get("area_id") == coat["id"])
                 self.assertEqual(coat_kinds, ["inspection", "sampling", "thermal"])
 
+                # The loose photo waits in Unsorted and is left out of the report.
+                self.assertEqual([p["drive_file_id"] for p in by_role["unsorted"]], ["loose"])
+                self.assertNotIn("unsorted", mtar_services.report_photos(job))
+
                 # A second pass imports nothing new.
                 job, again = mtar_services.sync_drive_photos(job)
                 self.assertEqual(again["imported"], 0)
-                self.assertEqual(len(job["photos"]), 7)
+                self.assertEqual(len(job["photos"]), 8)
+
+    def _synced_job(self, store, documents):
+        job = mtar_services.create_field_job()
+        job["client_name"] = "Scarlet Harper"
+        job = store.save(job)
+        job, _ = mtar_services.sync_drive_photos(job)
+        return job
+
+    def _patches(self, store, documents):
+        return (
+            patch.object(mtar_services, "store", store),
+            patch.object(mtar_services, "documents", documents),
+            patch.object(mtar_services, "drive_client", FakeDrive()),
+            patch.object(mtar_services, "DRIVE_PHOTOS_FOLDER", "root"),
+        )
+
+    def test_unsorted_photo_is_filed_where_the_user_picks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteJobStore(Path(tmp) / "db.sqlite3")
+            documents = FileDocumentStore(Path(tmp) / "docs")
+            p1, p2, p3, p4 = self._patches(store, documents)
+            with p1, p2, p3, p4:
+                job = self._synced_job(store, documents)
+                loose = next(p for p in job["photos"] if p["role"] == "unsorted")
+                attic = next(a for a in job["areas"] if a["name"] == "Attic")
+
+                job = mtar_services.assign_photo(job, loose["id"], "area", attic["id"])
+                filed = next(p for p in job["photos"] if p["id"] == loose["id"])
+                self.assertEqual((filed["role"], filed["area_id"]), ("area", attic["id"]))
+                self.assertEqual(len(mtar_services.report_photos(job)[attic["id"]]), 2)
+
+                # Filing as the cover replaces the existing property photo.
+                job = mtar_services.assign_photo(job, loose["id"], "property")
+                self.assertEqual([p["id"] for p in job["photos"] if p["role"] == "property"], [loose["id"]])
+
+                with self.assertRaises(ValueError):
+                    mtar_services.assign_photo(job, loose["id"], "area", "missing")
+
+    def test_deleted_photo_is_not_imported_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteJobStore(Path(tmp) / "db.sqlite3")
+            documents = FileDocumentStore(Path(tmp) / "docs")
+            p1, p2, p3, p4 = self._patches(store, documents)
+            with p1, p2, p3, p4:
+                job = self._synced_job(store, documents)
+                loose = next(p for p in job["photos"] if p["role"] == "unsorted")
+                job = mtar_services.delete_photo(job, loose["id"])
+
+                job, again = mtar_services.sync_drive_photos(store.get(job["id"]))
+                self.assertEqual(again["imported"], 0)
+                self.assertFalse(any(p.get("drive_file_id") == "loose" for p in job["photos"]))
 
 
 if __name__ == "__main__":

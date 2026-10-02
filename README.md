@@ -128,8 +128,8 @@ MTAR Photos/                                  <- optional root (DRIVE_PHOTOS_FOL
 ```
 
 - Link a folder by pasting its link on the Photos tab. When `DRIVE_PHOTOS_FOLDER` is set, an assessment links itself to the one folder whose name contains its client name or street address.
-- A folder that matches no existing area creates that area. Images outside a recognised folder are listed, not guessed.
-- New photos are imported on the same timer as Gmail and with **Import from Drive now**. Photos already imported are skipped.
+- A folder that matches no existing area creates that area. Images loose in the job folder, or in a folder MTAR does not recognise, are imported to **Unsorted** on the Photos tab, where the user picks their section; they stay out of the report until filed.
+- New photos are imported on the same timer as Gmail and with **Import from Drive now**. Each Drive file is imported once, so a photo deleted in MTAR is not brought back.
 - iPhone HEIC photos are converted to JPEG.
 
 Access reuses the Gmail OAuth client. The refresh token must include `https://www.googleapis.com/auth/drive.readonly`: regenerate it in the OAuth Playground with both the Gmail and Drive scopes and replace `GMAIL_REFRESH_TOKEN` (or set a separate `DRIVE_REFRESH_TOKEN`). Enable the Google Drive API in the same Google Cloud project.
