@@ -37,7 +37,7 @@ from prolab_parser import (
     suggested_mapping,
 )
 from report_builder import MOLD_DESCRIPTIONS, create_report
-from workflow import final_report_issues, transition_job
+from workflow import complete_job, final_report_issues, reopen_job, transition_job
 
 
 RAILWAY_VOLUME = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
@@ -67,7 +67,7 @@ STATUS_LABELS = {
     "report_review": "Report Review",
     "ready_to_send": "Ready to Send",
     "sent": "Sent",
-    "closed": "Closed",
+    "closed": "Completed",
 }
 
 FINDING_OPTIONS = [
@@ -322,6 +322,7 @@ def run_gmail_intake() -> dict:
             for message_id in job.get("gmail_message_ids", [])
         }
         processed_ids |= store.inbox_message_ids()
+        deleted_reports = store.deleted_report_numbers()
 
         result = {
             "configured": True,
@@ -379,6 +380,23 @@ def run_gmail_intake() -> dict:
                     )
                     result["ignored"] += 1
                 processed_ids.add(attachment.message_id)
+                continue
+
+            # An assessment the consultant deleted stays deleted, even when
+            # the same lab report arrives again in another email.
+            report_key = " ".join(str(metadata.get("report_number") or "").upper().split())
+            if report_key and report_key in deleted_reports:
+                store.record_inbox_item(
+                    attachment.message_id,
+                    "deleted",
+                    filename=safe_filename(attachment.filename, "Lab_Result.pdf"),
+                    sender=attachment.sender,
+                    subject=attachment.subject,
+                    report_number=report_key,
+                    reason="Assessment for this lab report was deleted",
+                )
+                processed_ids.add(attachment.message_id)
+                result["skipped"] += 1
                 continue
 
             # Duplicate protection: the same PRO-LAB report number never
@@ -538,6 +556,149 @@ def create_job_from_inbox_item(message_id: str) -> dict:
         )
     store.resolve_inbox_item(message_id, "created", job_id=saved["id"])
     return saved
+
+
+# ---------------------------------------------------------------------------
+# Dashboard housekeeping: complete, reopen, delete, finished reports
+# ---------------------------------------------------------------------------
+
+FINISHED_REPORT_TYPES = (".pdf", ".docx")
+
+
+def lab_report_number(job: dict) -> str:
+    metadata = job.get("lab_metadata") or (job.get("lab_parsed") or {}).get("metadata") or {}
+    return str(metadata.get("report_number") or "").strip()
+
+
+def complete_assessment(job: dict) -> dict:
+    """Mark an assessment completed, whatever step it is on."""
+    return store.save(complete_job(job))
+
+
+def reopen_assessment(job: dict) -> dict:
+    return store.save(reopen_job(job))
+
+
+def delete_assessment(job_id: str) -> bool:
+    """Delete an assessment with all its files, for good.
+
+    Its Gmail messages and lab report number are remembered, so the Gmail
+    check does not create the same assessment again.
+    """
+    with INTAKE_LOCK:
+        job = store.get(job_id)
+        if not job:
+            return False
+        details = {
+            "report_number": lab_report_number(job),
+            "project_name": job.get("client_name", ""),
+            "subject": ", ".join(p for p in [job.get("address"), job.get("city")] if p),
+            "reason": "Assessment deleted in MTAR",
+        }
+        for message_id in job.get("gmail_message_ids", []):
+            store.record_inbox_item(message_id, "deleted", **details)
+        store.record_inbox_item(f"deleted:{job_id}", "deleted", **details)
+        store.delete(job_id)
+    documents.delete_job_files(job_id)
+    return True
+
+
+def attach_finished_report(job: dict, content: bytes, filename: str, *, complete: bool = True) -> dict:
+    """Store the consultant's own finished report on an assessment."""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in FINISHED_REPORT_TYPES:
+        raise ValueError("Upload the finished report as a PDF or Word (.docx) file.")
+    if not content:
+        raise ValueError("The uploaded file is empty.")
+    name = safe_filename(Path(filename).name, f"{client_file_stem(job)}_Finished_Report{suffix}")
+    documents.save_bytes(job["id"], "finished", name, content)
+    job["finished_report_filename"] = name
+    job["finished_report_uploaded_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if complete:
+        job = complete_job(job)
+    return store.save(job)
+
+
+def _finished_report_text(content: bytes, filename: str) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    text = ""
+    try:
+        if suffix == ".pdf":
+            import fitz
+
+            with fitz.open(stream=content, filetype="pdf") as doc:
+                text = " ".join(page.get_text() for page in list(doc)[:3])
+        elif suffix == ".docx":
+            from docx import Document
+
+            document = Document(BytesIO(content))
+            parts = [p.text for p in document.paragraphs[:120]]
+            for table in document.tables[:6]:
+                parts.extend(cell.text for row in table.rows for cell in row.cells)
+            text = " ".join(parts)
+    except Exception:
+        text = ""
+    # The file name often carries the customer's name, so it counts too.
+    return f"{Path(filename or '').stem.replace('_', ' ')} {text}"
+
+
+def _match_key(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in str(value or "").upper())
+    return f" {' '.join(cleaned.split())} "
+
+
+def match_finished_report(content: bytes, filename: str, jobs: list[dict]) -> tuple[dict | None, str]:
+    """Find the one assessment a finished report belongs to.
+
+    A report matches when it contains the assessment's house number and
+    street name. When several assessments share that address, the customer's
+    name must also appear. Returns (assessment or None, reason).
+    """
+    text = _match_key(_finished_report_text(content, filename))
+    if " CERTIFICATE OF MOLD ANALYSIS " in text and " MOLD ASSESSMENT REPORT " not in text:
+        return None, "this is a PRO-LAB lab report, not a finished assessment report"
+
+    by_address = []
+    for job in jobs:
+        words = _match_key(job.get("address")).split()
+        if len(words) < 2 or not words[0][:1].isdigit():
+            continue
+        if f" {words[0]} {words[1]} " in text:
+            by_address.append(job)
+    if not by_address:
+        return None, "no assessment address was found in it"
+    if len(by_address) == 1:
+        return by_address[0], ""
+
+    by_name = [
+        job for job in by_address
+        if job.get("client_name") and _match_key(job["client_name"]) in text
+    ]
+    if len(by_name) == 1:
+        return by_name[0], ""
+    open_jobs = [job for job in (by_name or by_address) if job.get("status") != "closed"]
+    if len(open_jobs) == 1:
+        return open_jobs[0], ""
+    return None, f"{len(by_address)} assessments have this address"
+
+
+def import_finished_reports(files: list[tuple[str, bytes]]) -> list[dict]:
+    """Attach several finished reports to their assessments and complete them."""
+    jobs = _all_jobs()
+    results = []
+    for filename, content in files:
+        job, reason = match_finished_report(content, filename, jobs)
+        if job is None:
+            results.append({"filename": filename, "job_id": None, "reason": reason})
+            continue
+        try:
+            saved = attach_finished_report(job, content, filename)
+        except ValueError as exc:
+            results.append({"filename": filename, "job_id": None, "reason": str(exc)})
+            continue
+        jobs = [saved if j["id"] == saved["id"] else j for j in jobs]
+        results.append({"filename": filename, "job_id": saved["id"], "client_name": saved.get("client_name", ""), "reason": ""})
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -869,16 +1030,19 @@ def sync_all_drive_photos() -> int:
     root_children = drive_client.list_children(DRIVE_PHOTOS_FOLDER) if DRIVE_PHOTOS_FOLDER else None
     imported = 0
     for summary in store.list(statuses=sorted(DRIVE_SYNC_STATUSES), limit=500):
-        job = store.get(summary.id)
-        if not job:
-            continue
-        job = _auto_link_drive_folder(job, root_children)
-        if not job.get("drive_folder_id"):
-            continue
-        try:
-            _, result = sync_drive_photos(job, root_children=root_children)
-            imported += result["imported"]
-        except Exception as exc:
-            job["drive_last_sync"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "errors": [str(exc)]}
-            store.save(job)
+        # The lock keeps a delete from the dashboard from running mid-sync,
+        # which would otherwise save the deleted assessment back.
+        with INTAKE_LOCK:
+            job = store.get(summary.id)
+            if not job or job.get("status") not in DRIVE_SYNC_STATUSES:
+                continue
+            job = _auto_link_drive_folder(job, root_children)
+            if not job.get("drive_folder_id"):
+                continue
+            try:
+                _, result = sync_drive_photos(job, root_children=root_children)
+                imported += result["imported"]
+            except Exception as exc:
+                job["drive_last_sync"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "errors": [str(exc)]}
+                store.save(job)
     return imported

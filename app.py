@@ -255,15 +255,187 @@ def render_lab_inbox(jobs: list[dict]) -> None:
                     st.rerun()
 
 
-def render_dashboard() -> None:
-    st.title("Lab Inbox")
-    show_flash()
+DASHBOARD_VIEWS = ["Active", "Completed", "All"]
 
-    summaries = svc.store.list(limit=200)
-    jobs = [job for summary in summaries if (job := svc.store.get(summary.id))]
 
-    render_lab_inbox(jobs)
+def _job_address(job: dict) -> str:
+    return ", ".join(p for p in [job.get("address"), job.get("city")] if p)
 
+
+def _job_label(job: dict) -> str:
+    return f"{job.get('client_name') or 'New Assessment'} · {_job_address(job) or 'no address'}"
+
+
+def _in_view(job: dict, view: str) -> bool:
+    if view == "Active":
+        return job.get("status") != "closed"
+    if view == "Completed":
+        return job.get("status") == "closed"
+    return True
+
+
+def _matches_search(job: dict, query: str) -> bool:
+    haystack = " ".join(
+        str(part or "") for part in [
+            job.get("client_name"), job.get("address"), job.get("city"), job.get("zip"), svc.lab_report_number(job),
+        ]
+    ).lower()
+    return all(word in haystack for word in query.lower().split())
+
+
+def _dashboard_step(job: dict) -> str:
+    if job.get("status") == "closed":
+        return "Finished report attached" if job.get("finished_report_filename") else "Done"
+    return next_step(job)
+
+
+def _table_step(job: dict) -> str:
+    """A shorter next step that fits the dashboard table."""
+    if job.get("status") == "report_review":
+        issues = svc.final_issues(job)
+        if issues:
+            return f"Needs inspection info ({len(issues)})"
+    return _dashboard_step(job)
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'s' if count != 1 else ''}"
+
+
+def _reset_selection() -> None:
+    """Clear the table's ticked rows after anything changes the list."""
+    st.session_state["dash_version"] = st.session_state.get("dash_version", 0) + 1
+
+
+def _complete_jobs(jobs: list[dict]) -> None:
+    for job in jobs:
+        svc.complete_assessment(job)
+    _reset_selection()
+    names = ", ".join(job.get("client_name") or "New Assessment" for job in jobs)
+    flash("success", f"Marked completed: {names}. Find them under **Completed**.")
+
+
+def _reopen_jobs(jobs: list[dict]) -> None:
+    for job in jobs:
+        svc.reopen_assessment(job)
+    _reset_selection()
+    flash("success", f"Reopened {_plural(len(jobs), 'assessment')}.")
+
+
+def render_delete_confirmation() -> bool:
+    """Ask once more before deleting. Returns True while the question is open."""
+    pending = st.session_state.get("dash_delete")
+    if not pending:
+        return False
+    jobs = [job for job_id in pending if (job := svc.store.get(job_id))]
+    if not jobs:
+        st.session_state.pop("dash_delete", None)
+        return False
+    with st.container(border=True):
+        count = _plural(len(jobs), "assessment")
+        st.warning(f"Delete {count} with all their photos, COCs, lab PDFs and reports? This can't be undone.")
+        for job in jobs:
+            st.markdown(f"- {_job_label(job)}")
+        c1, c2, _ = st.columns([1, 1, 3])
+        if c1.button(f"Yes, delete {count}", type="primary", key="dash_delete_yes", width="stretch"):
+            deleted = sum(1 for job in jobs if run_action(svc.delete_assessment, job["id"]))
+            st.session_state.pop("dash_delete", None)
+            _reset_selection()
+            flash("success", f"Deleted {_plural(deleted, 'assessment')}.")
+            st.rerun()
+        if c2.button("Cancel", key="dash_delete_no", width="stretch"):
+            st.session_state.pop("dash_delete", None)
+            st.rerun()
+    return True
+
+
+def render_selected_job(job: dict) -> None:
+    """Summary and actions for the one assessment ticked in the table."""
+    closed = job.get("status") == "closed"
+    files = svc.documents.list_files(job["id"])
+    facts = [
+        svc.status_label(job.get("status")),
+        f"Lab report #{svc.lab_report_number(job)}" if svc.lab_report_number(job) else "No lab report yet",
+        _plural(len(job.get("samples", [])), "sample"),
+        _plural(len(job.get("photos", [])), "photo"),
+        _plural(len(files), "file"),
+    ]
+    if job.get("latest_final_pdf_filename"):
+        facts.append("final PDF made")
+    with st.container(border=True):
+        st.markdown(f"**{job.get('client_name') or 'New Assessment'}** · {_job_address(job) or 'Property address not entered'}")
+        st.caption(" · ".join(facts))
+        c = st.columns(4)
+        if c[0].button("Open", key="dash_open", type="primary", icon=":material/open_in_new:", width="stretch"):
+            open_assessment(job["id"])
+            st.rerun()
+        if closed:
+            if c[1].button("Reopen", key="dash_reopen", icon=":material/undo:", width="stretch"):
+                _reopen_jobs([job])
+                st.rerun()
+        elif c[1].button("Mark completed", key="dash_complete", icon=":material/task_alt:", width="stretch"):
+            _complete_jobs([job])
+            st.rerun()
+        with c[2].popover("Attach report", icon=":material/upload_file:", width="stretch"):
+            with st.form(f"dash_attach_{job['id']}", clear_on_submit=True, border=False):
+                upload = st.file_uploader("Your finished report (PDF or Word)", type=["pdf", "docx"])
+                complete = st.checkbox("Mark this assessment completed", value=not closed, disabled=closed)
+                if st.form_submit_button("Attach", type="primary") and upload:
+                    if run_action(svc.attach_finished_report, job, upload.getvalue(), upload.name, complete=complete):
+                        _reset_selection()
+                        flash("success", f"Attached {upload.name} to {job.get('client_name') or 'the assessment'}.")
+                    st.rerun()
+        if c[3].button("Delete", key="dash_delete_one", icon=":material/delete:", width="stretch"):
+            st.session_state["dash_delete"] = [job["id"]]
+            st.rerun()
+        download_stored(
+            job, "finished", job.get("finished_report_filename"),
+            f"Your finished report: {job.get('finished_report_filename')}", "dash_finished_dl",
+        )
+
+
+def render_bulk_actions(jobs: list[dict]) -> None:
+    open_jobs = [job for job in jobs if job.get("status") != "closed"]
+    closed_jobs = [job for job in jobs if job.get("status") == "closed"]
+    with st.container(border=True):
+        st.markdown(f"**{len(jobs)} assessments selected**")
+        c = st.columns(3)
+        if open_jobs and c[0].button(f"Mark {len(open_jobs)} completed", key="dash_bulk_complete", icon=":material/task_alt:", width="stretch"):
+            _complete_jobs(open_jobs)
+            st.rerun()
+        if closed_jobs and c[1].button(f"Reopen {len(closed_jobs)}", key="dash_bulk_reopen", icon=":material/undo:", width="stretch"):
+            _reopen_jobs(closed_jobs)
+            st.rerun()
+        if c[2].button(f"Delete {len(jobs)}", key="dash_bulk_delete", icon=":material/delete:", width="stretch"):
+            st.session_state["dash_delete"] = [job["id"] for job in jobs]
+            st.rerun()
+
+
+def render_finished_report_import() -> None:
+    with st.expander("Attach reports you already finished", icon=":material/task_alt:"):
+        st.caption(
+            "Add the reports you finished outside MTAR (PDF or Word). MTAR finds each one's assessment by "
+            "the property address in the report, attaches it, and marks the assessment completed."
+        )
+        with st.form("finished_report_import", clear_on_submit=True):
+            uploads = st.file_uploader("Finished reports", type=["pdf", "docx"], accept_multiple_files=True)
+            if st.form_submit_button("Attach and complete", type="primary") and uploads:
+                with st.spinner("Matching reports to assessments…"):
+                    results = run_action(svc.import_finished_reports, [(u.name, u.getvalue()) for u in uploads]) or []
+                matched = [r for r in results if r["job_id"]]
+                missed = [r for r in results if not r["job_id"]]
+                if matched:
+                    _reset_selection()
+                    flash("success", "Attached and completed: " + "; ".join(
+                        f"{r['filename']} → {r['client_name'] or 'assessment'}" for r in matched
+                    ))
+                if missed:
+                    flash("warning", "Not attached: " + "; ".join(f"{r['filename']} ({r['reason']})" for r in missed)
+                          + ". To attach a report by hand, tick its assessment in the table and use **Attach report**.")
+                st.rerun()
+
+
+def render_manual_lab_import() -> None:
     with st.expander("Import a PRO-LAB PDF by hand", icon=":material/upload_file:"):
         st.caption(
             "Same as an email from PRO-LAB: MTAR reads the report, creates or finds the customer, "
@@ -285,29 +457,73 @@ def render_dashboard() -> None:
                         open_assessment(result["job_id"])
                 st.rerun()
 
-    active = [job for job in jobs if job.get("status") != "closed"]
-    c1, c2 = st.columns(2)
-    c1.metric("Active assessments", len(active))
-    c2.metric("Total", len(jobs))
+
+def render_dashboard() -> None:
+    st.title("Assessments")
+    with st.container():
+        show_flash()
+
+    summaries = svc.store.list(limit=500)
+    jobs = [job for summary in summaries if (job := svc.store.get(summary.id))]
+
+    render_lab_inbox(jobs)
 
     if not jobs:
         st.info("No assessments yet. Start one with **New Assessment**, or let a PRO-LAB email create one.")
+        render_manual_lab_import()
         return
 
-    for job in jobs:
-        with st.container(border=True):
-            left, middle, right = st.columns([4, 3, 1])
-            with left:
-                st.markdown(f"**{job.get('client_name') or 'New Assessment'}**")
-                address = ", ".join(p for p in [job.get("address"), job.get("city")] if p)
-                st.caption(address or "Property address not entered")
-            with middle:
-                st.markdown(f"<span class='mtar-pill'>{svc.status_label(job.get('status'))}</span>", unsafe_allow_html=True)
-                st.caption(next_step(job))
-            with right:
-                if st.button("Open", key=f"open_{job['id']}", width="stretch"):
-                    open_assessment(job["id"])
-                    st.rerun()
+    top = st.columns([2, 3])
+    view = top[0].segmented_control(
+        "Show", DASHBOARD_VIEWS, default="Active", required=True, key="dash_view", label_visibility="collapsed",
+    ) or "Active"
+    query = top[1].text_input(
+        "Search", placeholder="Search name, address or lab report #", key="dash_search",
+        label_visibility="collapsed", icon=":material/search:",
+    ).strip()
+
+    rows = [job for job in jobs if _in_view(job, view) and _matches_search(job, query)]
+    rows.sort(key=lambda job: (as_date(job.get("inspection_date")) or date.min, job.get("created_at", "")), reverse=True)
+    active = sum(1 for job in jobs if job.get("status") != "closed")
+    st.caption(f"{active} active · {len(jobs) - active} completed · showing {len(rows)}")
+
+    if not rows:
+        st.info("Nothing matches." if query else f"No {view.lower()} assessments.")
+        selected = []
+    else:
+        table = pd.DataFrame(
+            [
+                {
+                    "Customer": job.get("client_name") or "New Assessment",
+                    "Address": _job_address(job) or "Not entered",
+                    "Inspected": as_date(job.get("inspection_date")),
+                    "Status": svc.status_label(job.get("status")),
+                    "Lab report #": svc.lab_report_number(job),
+                    "Next step": _table_step(job),
+                }
+                for job in rows
+            ]
+        )
+        event = st.dataframe(
+            table,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+            key=f"dash_table_{view}_{query}_{st.session_state.get('dash_version', 0)}",
+            column_config={"Inspected": st.column_config.DateColumn(format="MMM D, YYYY")},
+        )
+        selected = [rows[i] for i in event.selection.rows if i < len(rows)]
+
+    if not render_delete_confirmation():
+        if len(selected) == 1:
+            render_selected_job(selected[0])
+        elif selected:
+            render_bulk_actions(selected)
+        elif rows:
+            st.caption("Tick the box at the start of a row to open, complete, attach a report to, or delete it.")
+
+    render_finished_report_import()
+    render_manual_lab_import()
 
 
 # ---------------------------------------------------------------------------
@@ -858,6 +1074,19 @@ def render_report(job: dict) -> None:
         st.caption("Nothing generated yet.")
     for field, label in present:
         download_stored(job, "reports", job[field], f"{label}: {job[field]}", f"dl_{field}_{job['id']}")
+    download_stored(
+        job, "finished", job.get("finished_report_filename"),
+        f"Your finished report: {job.get('finished_report_filename')}", f"dl_finished_{job['id']}",
+    )
+    with st.expander("Attach a report you finished outside MTAR", icon=":material/upload_file:"):
+        with st.form(f"finished_{job['id']}", clear_on_submit=True, border=False):
+            upload = st.file_uploader("Your finished report (PDF or Word)", type=["pdf", "docx"])
+            closed = job.get("status") == "closed"
+            complete = st.checkbox("Mark this assessment completed", value=not closed, disabled=closed)
+            if st.form_submit_button("Attach", type="primary") and upload:
+                run_action(svc.attach_finished_report, job, upload.getvalue(), upload.name, complete=complete,
+                           success=f"Attached {upload.name}.")
+                st.rerun()
 
     preview_name = job.get("latest_final_pdf_filename") or job.get("latest_pdf_draft_filename")
     if preview_name and st.toggle("Preview PDF pages", key=f"preview_{job['id']}"):
@@ -901,7 +1130,7 @@ def render_assessment(job_id: str) -> None:
 
     status = job.get("status", "draft")
     allowed = [status] + sorted(ALLOWED_TRANSITIONS.get(status, set()))
-    s1, s2 = st.columns([2, 5])
+    s1, s2, s3 = st.columns([2, 4, 1], vertical_alignment="bottom")
     new_status = s1.selectbox("Workflow status", allowed, format_func=svc.status_label, key=f"status_{job_id}_{status}")
     if new_status != status:
         try:
@@ -910,7 +1139,17 @@ def render_assessment(job_id: str) -> None:
         except ValueError as exc:
             flash("error", str(exc))
         st.rerun()
-    s2.markdown(f"<br><span class='mtar-muted'>{next_step(job)}</span>", unsafe_allow_html=True)
+    s2.markdown(f"<span class='mtar-muted'>{_dashboard_step(job)}</span>", unsafe_allow_html=True)
+    if status == "closed":
+        if s3.button("Reopen", key=f"reopen_{job_id}", icon=":material/undo:", width="stretch"):
+            svc.reopen_assessment(job)
+            flash("success", "Assessment reopened.")
+            st.rerun()
+    elif s3.button("Mark completed", key=f"complete_{job_id}", icon=":material/task_alt:", width="stretch",
+                   help="For an assessment you already finished, for example outside MTAR."):
+        svc.complete_assessment(job)
+        flash("success", "Marked completed.")
+        st.rerun()
 
     # The key keeps the open tab across reruns; without it, any message shown
     # above the tabs after a button click sent the user back to Overview.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
 
 
 def _safe_part(value: str) -> str:
@@ -48,6 +49,10 @@ class FileDocumentStore:
             return False
         target.unlink()
         return True
+
+    def delete_job_files(self, job_id: str) -> None:
+        """Remove every stored file of one assessment."""
+        shutil.rmtree(self.root / "jobs" / _safe_part(job_id), ignore_errors=True)
 
     def list_files(self, job_id: str) -> list[dict]:
         root = self._job_dir(job_id)

@@ -58,6 +58,33 @@ def transition_job(job: dict, new_status: str) -> dict:
     return updated
 
 
+def complete_job(job: dict) -> dict:
+    """Return a copy of *job* marked completed (closed), whatever its status.
+
+    Used for assessments that were finished outside MTAR, so they skip the
+    remaining workflow steps. The previous status is kept for ``reopen_job``.
+    """
+    updated = copy.deepcopy(job)
+    current = updated.get("status") or STATUS_DRAFT
+    if current == STATUS_CLOSED:
+        return updated
+    updated["status_before_completed"] = current
+    updated["status"] = STATUS_CLOSED
+    updated["status_changed_at"] = _utc_now_iso()
+    return updated
+
+
+def reopen_job(job: dict) -> dict:
+    """Return a copy of a completed *job* back in the status it had before."""
+    updated = copy.deepcopy(job)
+    if updated.get("status") != STATUS_CLOSED:
+        return updated
+    previous = updated.pop("status_before_completed", None)
+    updated["status"] = previous if previous in JOB_STATUSES and previous != STATUS_CLOSED else STATUS_SENT
+    updated["status_changed_at"] = _utc_now_iso()
+    return updated
+
+
 def final_report_issues(job: dict, *, lab_pdf_present: bool) -> list[str]:
     """Central final-report gate shared by any future UI or automation worker."""
     from models import validate_job

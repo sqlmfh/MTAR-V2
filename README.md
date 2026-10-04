@@ -84,9 +84,11 @@ Configure these environment variables on the host:
 
 The OAuth token only needs the Gmail read-only scope. The intake worker searches recent PDF attachments, parses each PDF with the existing PRO-LAB parser, and compares the result against `Awaiting Lab` jobs.
 
-Automatic matching is conservative. It rewards exact client/property metadata and especially sample serial-number matches. If the best match is weak or too close to another job, MTAR does not attach the report automatically. PDFs that look like PRO-LAB results but fail the report-number/COC-line check go to the **Needs review** list on the Lab Inbox, where the consultant can match them to an assessment, create one, or ignore them. Unrelated PDFs are ignored.
+Automatic matching is conservative. It rewards exact client/property metadata and especially sample serial-number matches. If the best match is weak or too close to another job, MTAR does not attach the report automatically. PDFs that look like PRO-LAB results but fail the report-number/COC-line check go to the **Needs review** list on the dashboard, where the consultant can match them to an assessment, create one, or ignore them. Unrelated PDFs are ignored.
 
 The dashboard also includes a **Check Gmail Now** control for an immediate run. A background thread polls on the `GMAIL_POLL_SECONDS` interval while the Streamlit server is running.
+
+The Gmail check looks back 30 days, so a new deployment with an empty database imports the lab emails of that period, including jobs already finished by hand. On the dashboard, tick those assessments and **Mark completed** or **Delete** them, or drop the finished reports into **Attach reports you already finished**: MTAR matches each report to its assessment by the property address, attaches it and marks the assessment completed. A deleted assessment is not created again by later Gmail checks, even if the same lab report arrives in another email.
 
 
 ### Railway deployment
@@ -108,7 +110,7 @@ The current storage design is suitable for initial testing and a single running 
 
 ### Streamlit app layout (`streamlit-v3`)
 
-- `app.py` is the Streamlit UI: Lab Inbox dashboard, New Assessment, and one page per assessment with Overview, Inspection Areas, Samples, Photos, Lab Results, Report and Documents tabs.
+- `app.py` is the Streamlit UI: the assessments dashboard (Active / Completed / All, search, complete, delete, attach finished reports), New Assessment, and one page per assessment with Overview, Inspection Areas, Samples, Photos, Lab Results, Report and Documents tabs.
 - `mtar_services.py` holds every workflow action the UI calls (Gmail intake, lab import, duplicate protection, photos, COC, draft and final reports), so the rules can be tested without a browser.
 - The final customer PDF is the generated assessment with the original PRO-LAB certificate appended unchanged.
 - `assets/BLANK_COC.pdf` is the blank PRO-LAB COC; MTAR fills it from the assessment (lab media such as SWAB or PRO-15 are written as the COC codes SW and P15).

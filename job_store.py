@@ -211,6 +211,14 @@ class SQLiteJobStore:
             rows = conn.execute("SELECT message_id FROM lab_inbox").fetchall()
         return {row["message_id"] for row in rows}
 
+    def deleted_report_numbers(self) -> set[str]:
+        """PRO-LAB report numbers of assessments the consultant deleted."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT report_number FROM lab_inbox WHERE status = 'deleted' AND report_number != ''"
+            ).fetchall()
+        return {" ".join(row["report_number"].upper().split()) for row in rows}
+
     def resolve_inbox_item(self, message_id: str, status: str, *, job_id: str = "") -> None:
         with self._connect() as conn:
             conn.execute(
