@@ -166,24 +166,41 @@ REPORT_PHOTO = Inches(1.96)
 CLEAR_FINDINGS = {"Mold levels not elevated", "No mold detected"}
 
 
-def square_photo(content, pixels: int = 600) -> BytesIO | None:
-    """Centre-crop a photo to a square so every report photo is the same size."""
+def _reencode(content, shape) -> BytesIO | None:
+    """Re-save a photo as a plain JPEG after ``shape(image)``.
+
+    Word only accepts JPEGs with a standard header, so every report photo goes
+    through Pillow first; a JPEG copied out of a PDF, for one, has no header.
+    """
     try:
         if hasattr(content, "seek"):
             content.seek(0)
         raw = content.read() if hasattr(content, "read") else content
         with Image.open(BytesIO(raw)) as image:
-            image = ImageOps.exif_transpose(image).convert("RGB")
-            side = min(image.size)
-            left, top = (image.width - side) // 2, (image.height - side) // 2
-            image = image.crop((left, top, left + side, top + side))
-            image = image.resize((min(side, pixels),) * 2, Image.LANCZOS)
+            image = shape(ImageOps.exif_transpose(image).convert("RGB"))
             output = BytesIO()
             image.save(output, format="JPEG", quality=85)
         output.seek(0)
         return output
     except Exception:
         return None
+
+
+def square_photo(content, pixels: int = 600) -> BytesIO | None:
+    """Centre-crop a photo to a square so every report photo is the same size."""
+    def crop(image):
+        side = min(image.size)
+        left, top = (image.width - side) // 2, (image.height - side) // 2
+        image = image.crop((left, top, left + side, top + side))
+        return image.resize((min(side, pixels),) * 2, Image.LANCZOS)
+    return _reencode(content, crop)
+
+
+def cover_photo(content, pixels: int = 1600) -> BytesIO | None:
+    def shrink(image):
+        image.thumbnail((pixels, pixels), Image.LANCZOS)
+        return image
+    return _reencode(content, shrink)
 
 
 def _add_photo_rows(doc: Document, entries: list[dict]) -> None:
@@ -322,7 +339,7 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
         try:
             p = make_tight(doc.add_paragraph())
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.add_run().add_picture(cover_entry.get("content"), width=Inches(5))
+            p.add_run().add_picture(cover_photo(cover_entry.get("content")) or cover_entry.get("content"), width=Inches(5))
         except Exception:
             pass
 
