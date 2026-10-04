@@ -67,6 +67,9 @@ IMAGE_TYPES = ["jpg", "jpeg", "png", "webp", "heic", "heif"]
 def _start_gmail_poller() -> threading.Thread | None:
     if not (svc.gmail_client.configured() or svc.drive_client.configured()):
         return None
+    # On Railway, start.py already started the checker when the server booted.
+    if any(t.name == "mtar-gmail-poller" and t.is_alive() for t in threading.enumerate()):
+        return None
     thread = threading.Thread(target=svc.gmail_poll_loop, name="mtar-gmail-poller", daemon=True)
     thread.start()
     return thread
@@ -196,6 +199,12 @@ def render_sidebar() -> None:
                 ":orange[Gmail is not configured on this deployment.] Set GMAIL_CLIENT_ID, "
                 "GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN in the host's environment variables. "
                 "You can still upload a PRO-LAB PDF on the dashboard."
+            )
+
+        if os.environ.get("RAILWAY_PROJECT_ID") and not os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+            st.warning(
+                "Storage is temporary: attach a Railway volume to this service, or assessments, "
+                "photos and reports are lost on the next deploy."
             )
 
 

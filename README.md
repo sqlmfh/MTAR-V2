@@ -89,19 +89,20 @@ Automatic matching is conservative. It rewards exact client/property metadata an
 The dashboard also includes a **Check Gmail Now** control for an immediate run. A background thread polls on the `GMAIL_POLL_SECONDS` interval while the Streamlit server is running.
 
 
-### Railway deployment
+### Railway deployment (`railway-deployment` branch)
 
-The `automation-foundation` branch is prepared for Railway with `railway.json`.
+Railway builds the `Dockerfile` (Python 3.11) and runs `python start.py`, which:
 
-Recommended Railway setup:
+- starts the Gmail/Drive checker as soon as the server boots, so PRO-LAB emails are picked up after every deploy without anyone opening the app;
+- serves Streamlit on `$PORT` (8501 if unset) at `0.0.0.0`.
 
-1. Create a new Railway project from `sqlmfh/MTAR-V2`.
-2. Deploy branch `streamlit-v3` (staging first).
-3. Add a persistent Volume to the service. MTAR automatically uses Railway's `RAILWAY_VOLUME_MOUNT_PATH` for the SQLite job database and document storage.
-4. Add the environment variables shown in `.env.example`. Keep real Gmail secrets only in Railway Variables.
-5. Generate a Railway public domain for the service.
+Setup:
 
-Railway runs `streamlit run app.py --server.port $PORT --server.address 0.0.0.0` and health-checks `/`. The app listens on Railway's injected `PORT`.
+1. New Railway project → Deploy from GitHub repo → `sqlmfh/MTAR-V2`. In the service's Settings → Source, set the branch to `railway-deployment`.
+2. Attach a Volume to the service with mount path `/data`. MTAR stores the job database and all documents on it (via `RAILWAY_VOLUME_MOUNT_PATH`). Without a volume, the app and the deploy logs warn that data is lost on every deploy.
+3. Variables: `PORT=8501` plus the values from `.env.example` (the same Gmail/Drive values used in Streamlit Secrets).
+4. Settings → Networking → Generate Domain on port 8501. Optional: Settings → Deploy → Healthcheck Path `/_stcore/health`.
+5. Keep one replica: the job database is SQLite and the checker runs inside the app.
 
 The current storage design is suitable for initial testing and a single running MTAR instance. Before multi-instance production use, replace SQLite with PostgreSQL and move binary documents to shared cloud/object storage.
 
