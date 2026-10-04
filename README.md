@@ -84,11 +84,13 @@ Configure these environment variables on the host:
 
 The OAuth token only needs the Gmail read-only scope. The intake worker searches recent PDF attachments, parses each PDF with the existing PRO-LAB parser, and compares the result against `Awaiting Lab` jobs.
 
-Automatic matching is conservative. It rewards exact client/property metadata and especially sample serial-number matches. If the best match is weak or too close to another job, MTAR does not attach the report automatically. PDFs that look like PRO-LAB results but fail the report-number/COC-line check go to the **Needs review** list on the dashboard, where the consultant can match them to an assessment, create one, or ignore them. Unrelated PDFs are ignored.
+Automatic matching is conservative. It rewards exact client/property metadata and especially sample serial-number matches. If the best match is weak or too close to another job, MTAR does not attach the report automatically. PDFs that look like PRO-LAB results but fail the report-number/COC-line check are listed as **Needs review** on the PRO-LAB Reports page, where the consultant can match them to an assessment, create one, or ignore them. Unrelated PDFs are ignored.
 
 The dashboard also includes a **Check Gmail Now** control for an immediate run. A background thread polls on the `GMAIL_POLL_SECONDS` interval while the Streamlit server is running.
 
-The Gmail check looks back 30 days, so a new deployment with an empty database imports the lab emails of that period, including jobs already finished by hand. On the dashboard, tick those assessments and **Mark completed** or **Delete** them, or drop the finished reports into **Attach reports you already finished**: MTAR matches each report to its assessment by the property address, attaches it and marks the assessment completed. A deleted assessment is not created again by later Gmail checks, even if the same lab report arrives in another email.
+New PRO-LAB reports wait on the **PRO-LAB Reports** page (sidebar), where each report can be previewed and turned into an assessment, added to an existing one, or dismissed. A report for an assessment that is Awaiting Lab still attaches to it automatically. A switch on that page turns automatic creation back on.
+
+The Gmail check looks back 30 days, so a new deployment with an empty database picks up the lab emails of that period, including jobs already finished by hand. On the dashboard, tick those assessments and **Mark completed** or **Delete** them, or drop the finished reports into **Attach reports you already finished**: MTAR matches each report to its assessment by the property address, attaches it and marks the assessment completed. A deleted assessment is not created again by later Gmail checks, even if the same lab report arrives in another email; its lab report stays on the PRO-LAB Reports page, so it can be created again by hand.
 
 
 ### Railway deployment

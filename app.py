@@ -1,4 +1,4 @@
-"""MTAR Streamlit app: Lab Inbox, assessments, and report review.
+"""MTAR Streamlit app: assessments, PRO-LAB reports, and report review.
 
 All workflow rules live in ``mtar_services``; this file only renders pages
 and passes user input to those services.
@@ -81,10 +81,14 @@ _start_gmail_poller()
 
 
 def open_assessment(job_id: str | None) -> None:
+    st.query_params.clear()
     if job_id:
         st.query_params["assessment"] = job_id
-    else:
-        st.query_params.clear()
+
+
+def open_lab_reports() -> None:
+    st.query_params.clear()
+    st.query_params["page"] = "lab-reports"
 
 
 def flash(kind: str, message: str) -> None:
@@ -162,6 +166,9 @@ def render_sidebar() -> None:
         if st.button("Dashboard", icon=":material/dashboard:", width="stretch"):
             open_assessment(None)
             st.rerun()
+        if st.button("PRO-LAB Reports", icon=":material/science:", width="stretch"):
+            open_lab_reports()
+            st.rerun()
         if st.button("New Assessment", icon=":material/add:", width="stretch", type="primary"):
             job = svc.save_job(svc.create_field_job())
             open_assessment(job["id"])
@@ -175,7 +182,8 @@ def render_sidebar() -> None:
             if last.get("status") == "ok":
                 st.caption(
                     f"Last check {local_time(last['at'])}: {last['checked']} PDFs, "
-                    f"{last['imported']} imported, {last['created']} new, {last['ambiguous']} need review."
+                    f"{last.get('waiting', 0)} new lab reports waiting, {last['created']} assessments created, "
+                    f"{last['ambiguous']} need review."
                 )
             elif last.get("status") == "error":
                 st.caption(f":red[Last check failed: {last.get('error')}]")
@@ -186,73 +194,22 @@ def render_sidebar() -> None:
                 if result:
                     flash(
                         "warning" if result["ambiguous"] else "success",
-                        f"Checked {result['checked']} PDF attachment(s): imported {result['imported']}, "
-                        f"created {result['created']} assessment(s), {len(result['ambiguous'])} need review, "
-                        f"ignored {result['ignored']}.",
+                        f"Checked {result['checked']} PDF attachment(s): {result.get('waiting', 0)} new lab report(s) "
+                        f"waiting on the PRO-LAB Reports page, {result['created']} assessment(s) created, "
+                        f"{len(result['ambiguous'])} need review, ignored {result['ignored']}.",
                     )
                 st.rerun()
         else:
             st.caption(
                 ":orange[Gmail is not configured on this deployment.] Set GMAIL_CLIENT_ID, "
                 "GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN in the host's environment variables. "
-                "You can still upload a PRO-LAB PDF on the dashboard."
+                "You can still upload a PRO-LAB PDF on the PRO-LAB Reports page."
             )
 
 
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
-
-
-def render_lab_inbox(jobs: list[dict]) -> None:
-    items = svc.store.list_inbox(status="needs_review")
-    if not items:
-        return
-    st.subheader("Needs review")
-    st.caption(
-        "These PDFs look like PRO-LAB results, but MTAR could not read them confidently, "
-        "so it did not create anything. Decide what each one is."
-    )
-    job_options = {job["id"]: f"{job.get('client_name') or 'New Assessment'} · {job.get('address') or 'no address'}" for job in jobs}
-    for item in items:
-        with st.container(border=True):
-            left, right = st.columns([3, 2])
-            with left:
-                st.markdown(f"**{item['filename']}**")
-                st.caption(
-                    f"Report #{item['report_number'] or 'unknown'} · {item['project_name'] or 'customer unknown'} · "
-                    f"from {item['sender'] or 'unknown sender'}"
-                )
-                st.caption(f"Why: {item['reason']}")
-                content = svc.inbox_pdf(item)
-                if content:
-                    st.download_button(
-                        "Download PDF", content, file_name=item["filename"], mime="application/pdf",
-                        key=f"inbox_dl_{item['message_id']}",
-                    )
-            with right:
-                target = st.selectbox(
-                    "Match to assessment",
-                    list(job_options),
-                    format_func=job_options.get,
-                    index=None,
-                    key=f"inbox_target_{item['message_id']}",
-                )
-                c1, c2, c3 = st.columns(3)
-                if c1.button("Match", key=f"inbox_match_{item['message_id']}", disabled=not target):
-                    job = run_action(svc.attach_inbox_item_to_job, item["message_id"], target, success="Lab PDF attached.")
-                    if job:
-                        open_assessment(job["id"])
-                    st.rerun()
-                if c2.button("Create", key=f"inbox_create_{item['message_id']}"):
-                    job = run_action(svc.create_job_from_inbox_item, item["message_id"], success="Assessment created from lab PDF.")
-                    if job:
-                        open_assessment(job["id"])
-                    st.rerun()
-                if c3.button("Ignore", key=f"inbox_ignore_{item['message_id']}"):
-                    svc.ignore_inbox_item(item["message_id"])
-                    flash("info", f"Ignored {item['filename']}.")
-                    st.rerun()
 
 
 DASHBOARD_VIEWS = ["Active", "Completed", "All"]
@@ -466,11 +423,18 @@ def render_dashboard() -> None:
     summaries = svc.store.list(limit=500)
     jobs = [job for summary in summaries if (job := svc.store.get(summary.id))]
 
-    render_lab_inbox(jobs)
+    waiting = [entry for entry in svc.lab_reports() if entry["status"] in {"new", "review"}]
+    if waiting:
+        notice, go = st.columns([4, 1], vertical_alignment="center")
+        notice.info(f"{_plural(len(waiting), 'PRO-LAB report')} waiting for you to create an assessment.",
+                    icon=":material/science:")
+        if go.button("See lab reports", key="dash_lab_reports", width="stretch"):
+            open_lab_reports()
+            st.rerun()
 
     if not jobs:
-        st.info("No assessments yet. Start one with **New Assessment**, or let a PRO-LAB email create one.")
-        render_manual_lab_import()
+        st.info("No assessments yet. Start one with **New Assessment**, or create one from a PRO-LAB report.")
+        render_finished_report_import()
         return
 
     top = st.columns([2, 3])
@@ -523,6 +487,170 @@ def render_dashboard() -> None:
             st.caption("Tick the box at the start of a row to open, complete, attach a report to, or delete it.")
 
     render_finished_report_import()
+
+
+# ---------------------------------------------------------------------------
+# PRO-LAB Reports page
+# ---------------------------------------------------------------------------
+
+LAB_VIEWS = ["Waiting", "All"]
+
+
+def _reset_lab_selection() -> None:
+    st.session_state["lab_version"] = st.session_state.get("lab_version", 0) + 1
+
+
+def _report_title(entry: dict) -> str:
+    return f"{entry['customer'] or 'Customer unknown'} · {entry['location'] or 'test location unknown'}"
+
+
+def _report_matches(entry: dict, query: str) -> bool:
+    haystack = " ".join([entry["customer"], entry["location"], entry["report_number"], entry["filename"]]).lower()
+    return all(word in haystack for word in query.lower().split())
+
+
+def _create_from_reports(entries: list[dict]) -> None:
+    created = []
+    for entry in entries:
+        job = run_action(svc.create_assessment_from_report, entry)
+        if job:
+            created.append(job)
+    _reset_lab_selection()
+    if len(created) == 1:
+        flash("success", f"Assessment created for {created[0].get('client_name') or 'this lab report'}.")
+        open_assessment(created[0]["id"])
+    elif created:
+        flash("success", f"Created {_plural(len(created), 'assessment')}: "
+              + ", ".join(job.get("client_name") or "New Assessment" for job in created) + ".")
+
+
+def render_selected_report(entry: dict, jobs: list[dict]) -> None:
+    status = entry["status"]
+    facts = [svc.LAB_REPORT_STATUSES[status]]
+    if entry["report_number"]:
+        facts.append(f"Report #{entry['report_number']}")
+    if entry["report_date"]:
+        facts.append(f"{entry['report_date']:%b %d, %Y}")
+    facts.append(entry["filename"])
+    pdf = svc.lab_report_pdf(entry)
+    with st.container(border=True):
+        st.markdown(f"**{entry['customer'] or 'Customer unknown'}** · {entry['location'] or 'Test location unknown'}")
+        st.caption(" · ".join(facts))
+        if status == "review":
+            st.caption(f"MTAR could not read this report with confidence: {entry['reason']}")
+        c = st.columns(4)
+        if status == "linked":
+            if c[0].button("Open assessment", key="lab_open", type="primary", icon=":material/open_in_new:", width="stretch"):
+                open_assessment(entry["job_id"])
+                st.rerun()
+        elif c[0].button("Create assessment", key="lab_create", type="primary", icon=":material/add:", width="stretch"):
+            _create_from_reports([entry])
+            st.rerun()
+        if pdf:
+            c[1].download_button(
+                "Download PDF", pdf, file_name=entry["filename"], mime="application/pdf", key="lab_download",
+                icon=":material/download:", width="stretch",
+            )
+        if status in {"new", "review"}:
+            with c[2].popover("Add to existing", icon=":material/link:", width="stretch"):
+                options = {job["id"]: _job_label(job) for job in jobs}
+                target = st.selectbox("Assessment", list(options), format_func=options.get, index=None, key="lab_target")
+                if st.button("Attach lab report", key="lab_attach", type="primary", disabled=not target):
+                    job = run_action(svc.attach_inbox_item_to_job, entry["message_id"], target, success="Lab report attached.")
+                    _reset_lab_selection()
+                    if job:
+                        open_assessment(job["id"])
+                    st.rerun()
+            if c[3].button("Dismiss", key="lab_dismiss", icon=":material/visibility_off:", width="stretch",
+                           help="Hide it from Waiting. You can still find it under All."):
+                svc.ignore_inbox_item(entry["message_id"])
+                _reset_lab_selection()
+                flash("info", f"Dismissed {entry['filename']}.")
+                st.rerun()
+        if pdf:
+            _pdf_preview(pdf, entry["key"], per_row=2, dpi=100)
+
+
+def render_lab_reports() -> None:
+    st.title("PRO-LAB Reports")
+    with st.container():
+        show_flash()
+
+    auto = st.toggle(
+        "Create assessments automatically when a new PRO-LAB report arrives",
+        value=svc.auto_create_enabled(),
+        key="lab_auto_create",
+        help="When this is off, new lab reports wait here until you create an assessment. "
+        "A lab report for an assessment that is Awaiting Lab is always attached to it automatically.",
+    )
+    if auto != svc.auto_create_enabled():
+        svc.set_auto_create(auto)
+
+    jobs = [job for summary in svc.store.list(limit=500) if (job := svc.store.get(summary.id))]
+    reports = svc.lab_reports()
+    top = st.columns([2, 3])
+    view = top[0].segmented_control(
+        "Show", LAB_VIEWS, default="Waiting", required=True, key="lab_view", label_visibility="collapsed",
+    ) or "Waiting"
+    query = top[1].text_input(
+        "Search", placeholder="Search customer, address or report #", key="lab_search",
+        label_visibility="collapsed", icon=":material/search:",
+    ).strip()
+
+    waiting = [e for e in reports if e["status"] in {"new", "review"}]
+    rows = [e for e in (waiting if view == "Waiting" else reports) if _report_matches(e, query)]
+    st.caption(f"{len(waiting)} waiting · {len(reports)} lab reports in all · showing {len(rows)}")
+
+    selected = []
+    if not rows:
+        st.info("Nothing matches." if query else (
+            "No lab reports are waiting. New PRO-LAB emails show up here." if view == "Waiting" else "No lab reports yet."
+        ))
+    else:
+        table = pd.DataFrame(
+            [
+                {
+                    "Customer": entry["customer"] or "Unknown",
+                    "Test location": entry["location"] or "Unknown",
+                    "Report #": entry["report_number"],
+                    "Report date": entry["report_date"],
+                    "Status": svc.LAB_REPORT_STATUSES[entry["status"]],
+                }
+                for entry in rows
+            ]
+        )
+        event = st.dataframe(
+            table,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row",
+            key=f"lab_table_{view}_{query}_{st.session_state.get('lab_version', 0)}",
+            column_config={"Report date": st.column_config.DateColumn(format="MMM D, YYYY")},
+        )
+        selected = [rows[i] for i in event.selection.rows if i < len(rows)]
+
+    if len(selected) == 1:
+        render_selected_report(selected[0], jobs)
+    elif selected:
+        creatable = [e for e in selected if e["status"] != "linked"]
+        dismissable = [e for e in selected if e["status"] in {"new", "review"}]
+        with st.container(border=True):
+            st.markdown(f"**{len(selected)} lab reports selected**")
+            c = st.columns(3)
+            if creatable and c[0].button(f"Create {_plural(len(creatable), 'assessment')}", key="lab_bulk_create",
+                                         type="primary", icon=":material/add:", width="stretch"):
+                _create_from_reports(creatable)
+                st.rerun()
+            if dismissable and c[1].button(f"Dismiss {len(dismissable)}", key="lab_bulk_dismiss",
+                                           icon=":material/visibility_off:", width="stretch"):
+                for entry in dismissable:
+                    svc.ignore_inbox_item(entry["message_id"])
+                _reset_lab_selection()
+                flash("info", f"Dismissed {_plural(len(dismissable), 'lab report')}.")
+                st.rerun()
+    elif rows:
+        st.caption("Tick a report to see it and create an assessment from it.")
+
     render_manual_lab_import()
 
 
@@ -1007,12 +1135,12 @@ def render_lab(job: dict) -> None:
                     st.caption(f"Lab observation: {sample['lab_observations']}")
 
 
-def _pdf_preview(content: bytes, key: str) -> None:
+def _pdf_preview(content: bytes, key: str, *, per_row: int = 3, dpi: int = 60) -> None:
     with fitz.open(stream=content, filetype="pdf") as doc:
         st.caption(f"{doc.page_count} pages")
-        columns = st.columns(3)
+        columns = st.columns(per_row)
         for i, page in enumerate(doc):
-            columns[i % 3].image(page.get_pixmap(dpi=60).tobytes("png"), caption=f"Page {i + 1}", width="stretch")
+            columns[i % per_row].image(page.get_pixmap(dpi=dpi).tobytes("png"), caption=f"Page {i + 1}", width="stretch")
 
 
 def render_report(job: dict) -> None:
@@ -1178,5 +1306,7 @@ render_sidebar()
 current = st.query_params.get("assessment")
 if current:
     render_assessment(current)
+elif st.query_params.get("page") == "lab-reports":
+    render_lab_reports()
 else:
     render_dashboard()

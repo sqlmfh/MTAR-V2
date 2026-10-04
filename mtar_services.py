@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import threading
@@ -31,6 +32,7 @@ from models import new_area, new_sample
 from pdf_report_builder import create_customer_pdf
 from photo_service import normalize_report_photo
 from prolab_parser import (
+    _parse_lab_date,
     apply_prolab_results,
     build_automated_job_from_prolab,
     parse_prolab_pdf,
@@ -297,11 +299,37 @@ def _is_partial_prolab(parsed: dict) -> bool:
     return bool(parsed.get("samples") or metadata.get("report_number"))
 
 
+# New PRO-LAB reports wait on the PRO-LAB Reports page until the consultant
+# creates an assessment, unless this setting is switched on.
+AUTO_CREATE_SETTING = "auto_create_from_lab"
+AUTO_CREATE_DEFAULT = False
+
+
+def auto_create_enabled() -> bool:
+    return store.get_setting(AUTO_CREATE_SETTING, "1" if AUTO_CREATE_DEFAULT else "0") == "1"
+
+
+def set_auto_create(enabled: bool) -> None:
+    store.set_setting(AUTO_CREATE_SETTING, "1" if enabled else "0")
+
+
+def _lab_details(metadata: dict, samples: int | None = None) -> dict:
+    details = {
+        "test_location": str(metadata.get("test_location") or ""),
+        "report_date": str(metadata.get("report_date") or ""),
+    }
+    if samples is not None:
+        details["samples"] = samples
+    return details
+
+
 def run_gmail_intake() -> dict:
     """Check Gmail once and turn valid PRO-LAB PDFs into MTAR assessments.
 
-    Uncertain PRO-LAB-like PDFs go to the Lab Inbox for review instead of
-    creating a customer or assessment. Unrelated PDFs are ignored.
+    A report for an assessment that is Awaiting Lab attaches to it. Other
+    reports wait on the PRO-LAB Reports page, unless auto-create is on.
+    Uncertain PRO-LAB-like PDFs are listed there as needing review, and
+    unrelated PDFs are ignored.
     """
     if not gmail_client.configured():
         return {
@@ -312,6 +340,7 @@ def run_gmail_intake() -> dict:
             "ambiguous": [],
             "ignored": 0,
             "skipped": 0,
+            "waiting": 0,
         }
 
     with INTAKE_LOCK:
@@ -332,7 +361,9 @@ def run_gmail_intake() -> dict:
             "ambiguous": [],
             "ignored": 0,
             "skipped": 0,
+            "waiting": 0,
         }
+        auto_create = auto_create_enabled()
 
         attachments = gmail_client.search_pdf_attachments()
         result["checked"] = len(attachments)
@@ -361,6 +392,7 @@ def run_gmail_intake() -> dict:
                         project_name=str(metadata.get("project_name") or ""),
                         reason="; ".join(parsed.get("warnings", []))
                         or "Report number and sample COC lines do not agree.",
+                        details=_lab_details(metadata, len(parsed.get("samples", []))),
                     )
                     result["ambiguous"].append(
                         {
@@ -420,6 +452,27 @@ def run_gmail_intake() -> dict:
                 result["skipped"] += 1
                 continue
 
+            # Without auto-create, a report only attaches by itself to an
+            # assessment that is waiting for it; anything else waits for the
+            # consultant on the PRO-LAB Reports page.
+            awaiting_jobs = [job for job in all_jobs if job.get("status") == "awaiting_lab"]
+            if not auto_create and not confident_job_match(parsed, awaiting_jobs):
+                filename = safe_filename(attachment.filename, "PROLAB_Result.pdf")
+                documents.save_bytes(f"inbox_{attachment.message_id}", "lab", filename, attachment.content)
+                store.record_inbox_item(
+                    attachment.message_id,
+                    "waiting",
+                    filename=filename,
+                    sender=attachment.sender,
+                    subject=attachment.subject,
+                    report_number=str(metadata.get("report_number") or ""),
+                    project_name=str(metadata.get("project_name") or ""),
+                    details=_lab_details(metadata, len(parsed.get("samples", []))),
+                )
+                processed_ids.add(attachment.message_id)
+                result["waiting"] += 1
+                continue
+
             saved, created = import_lab_report(
                 attachment.content,
                 attachment.filename,
@@ -459,6 +512,7 @@ def check_gmail_now() -> dict:
             "created": result.get("created", 0),
             "ambiguous": len(result.get("ambiguous", [])),
             "ignored": result.get("ignored", 0),
+            "waiting": result.get("waiting", 0),
         }
     return result
 
@@ -518,7 +572,7 @@ def attach_inbox_item_to_job(message_id: str, job_id: str) -> dict:
     item = store.get_inbox_item(message_id)
     job = store.get(job_id)
     if not item or not job:
-        raise ValueError("Lab Inbox item or assessment not found")
+        raise ValueError("Lab report or assessment not found")
     content = inbox_pdf(item)
     if content is None:
         raise ValueError("The stored lab PDF is missing")
@@ -534,13 +588,20 @@ def create_job_from_inbox_item(message_id: str) -> dict:
     """Consultant confirmed an uncertain PDF should start a new assessment."""
     item = store.get_inbox_item(message_id)
     if not item:
-        raise ValueError("Lab Inbox item not found")
+        raise ValueError("Lab report not found")
     content = inbox_pdf(item)
     if content is None:
         raise ValueError("The stored lab PDF is missing")
     parsed = parse_prolab_pdf(content)
     if not parsed.get("samples"):
         raise ValueError("No sample table could be read from this PDF")
+    existing = find_job_by_report_number(parsed, _all_jobs())
+    if existing:
+        raise ValueError(
+            f"PRO-LAB report #{parsed['metadata']['report_number']} already has an assessment: "
+            f"{existing.get('client_name') or 'New Assessment'}."
+        )
+    from_gmail = not message_id.startswith("deleted:")
     with INTAKE_LOCK:
         saved, _ = import_lab_report(
             content,
@@ -552,7 +613,7 @@ def create_job_from_inbox_item(message_id: str) -> dict:
                 "thread_id": "",
                 "sender": item.get("sender", ""),
                 "subject": item.get("subject", ""),
-            },
+            } if from_gmail else None,
         )
     store.resolve_inbox_item(message_id, "created", job_id=saved["id"])
     return saved
@@ -589,14 +650,24 @@ def delete_assessment(job_id: str) -> bool:
         job = store.get(job_id)
         if not job:
             return False
+        metadata = job.get("lab_metadata") or (job.get("lab_parsed") or {}).get("metadata") or {}
+        lab_filename = safe_filename(job.get("lab_filename") or "", "PROLAB_Result.pdf")
         details = {
             "report_number": lab_report_number(job),
-            "project_name": job.get("client_name", ""),
+            "project_name": str(metadata.get("project_name") or job.get("client_name", "")),
             "subject": ", ".join(p for p in [job.get("address"), job.get("city")] if p),
             "reason": "Assessment deleted in MTAR",
+            "filename": lab_filename,
+            "details": _lab_details(metadata),
         }
         for message_id in job.get("gmail_message_ids", []):
             store.record_inbox_item(message_id, "deleted", **details)
+            store.resolve_inbox_item(message_id, "deleted")
+        # Keep the lab PDF so the assessment can be created again from the
+        # PRO-LAB Reports page.
+        lab_pdf = lab_pdf_bytes(job)
+        if lab_pdf:
+            documents.save_bytes(f"inbox_deleted:{job_id}", "lab", lab_filename, lab_pdf)
         store.record_inbox_item(f"deleted:{job_id}", "deleted", **details)
         store.delete(job_id)
     documents.delete_job_files(job_id)
@@ -699,6 +770,102 @@ def import_finished_reports(files: list[tuple[str, bytes]]) -> list[dict]:
         jobs = [saved if j["id"] == saved["id"] else j for j in jobs]
         results.append({"filename": filename, "job_id": saved["id"], "client_name": saved.get("client_name", ""), "reason": ""})
     return results
+
+
+# ---------------------------------------------------------------------------
+# PRO-LAB Reports page: every lab report MTAR has seen
+# ---------------------------------------------------------------------------
+
+LAB_REPORT_STATUSES = {
+    "new": "New",
+    "review": "Needs review",
+    "linked": "Has assessment",
+    "deleted": "Assessment deleted",
+    "dismissed": "Dismissed",
+}
+_INBOX_TO_REPORT_STATUS = {
+    "waiting": "new",
+    "needs_review": "review",
+    "created": "linked",
+    "matched": "linked",
+    "deleted": "deleted",
+    "dismissed": "dismissed",
+}
+_REPORT_PRIORITY = ["linked", "new", "review", "deleted", "dismissed"]
+
+
+def lab_reports() -> list[dict]:
+    """One entry per PRO-LAB report: Gmail ones, uploads, and deleted ones.
+
+    Waiting and uncertain Gmail reports come from the Lab Inbox table; reports
+    already turned into assessments come from the assessments themselves, so
+    the list also covers assessments created before this page existed.
+    """
+    jobs = {job["id"]: job for job in _all_jobs()}
+    entries: list[dict] = []
+    for item in store.list_inbox(status=list(_INBOX_TO_REPORT_STATUS)):
+        status = _INBOX_TO_REPORT_STATUS[item["status"]]
+        job_id = item.get("job_id") or ""
+        if status == "linked" and job_id not in jobs:
+            continue  # the assessment itself is listed below, or was deleted
+        if not documents.exists(f"inbox_{item['message_id']}", "lab", item.get("filename") or ""):
+            continue  # nothing to show or create from
+        try:
+            details = json.loads(item.get("details") or "{}")
+        except ValueError:
+            details = {}
+        entries.append({
+            "key": item["message_id"],
+            "message_id": item["message_id"],
+            "job_id": job_id if status == "linked" else "",
+            "status": status,
+            "customer": item.get("project_name") or "",
+            "location": details.get("test_location", ""),
+            "report_number": item.get("report_number") or "",
+            "report_date": _parse_lab_date(details.get("report_date", "")),
+            "filename": item.get("filename") or "",
+            "reason": item.get("reason") or "",
+            "found_at": item.get("created_at") or "",
+        })
+    for job in jobs.values():
+        if not job.get("lab_filename") or not lab_pdf_present(job):
+            continue
+        metadata = job.get("lab_metadata") or (job.get("lab_parsed") or {}).get("metadata") or {}
+        entries.append({
+            "key": f"job:{job['id']}",
+            "message_id": None,
+            "job_id": job["id"],
+            "status": "linked",
+            "customer": str(metadata.get("project_name") or job.get("client_name") or ""),
+            "location": str(metadata.get("test_location") or ", ".join(p for p in [job.get("address"), job.get("city")] if p)),
+            "report_number": lab_report_number(job),
+            "report_date": _parse_lab_date(str(metadata.get("report_date") or "")),
+            "filename": job["lab_filename"],
+            "reason": "",
+            "found_at": job.get("created_at") or "",
+        })
+
+    best: dict[str, dict] = {}
+    for entry in entries:
+        key = " ".join(entry["report_number"].upper().split()) or entry["key"]
+        current = best.get(key)
+        if current is None or _REPORT_PRIORITY.index(entry["status"]) < _REPORT_PRIORITY.index(current["status"]):
+            best[key] = entry
+    return sorted(best.values(), key=lambda e: (e["report_date"] or datetime.min.date(), e["found_at"]), reverse=True)
+
+
+def lab_report_pdf(entry: dict) -> bytes | None:
+    if entry.get("message_id"):
+        return documents.read_bytes(f"inbox_{entry['message_id']}", "lab", entry.get("filename") or "")
+    job = store.get(entry.get("job_id") or "")
+    return lab_pdf_bytes(job) if job else None
+
+
+def create_assessment_from_report(entry: dict) -> dict:
+    """The consultant chose to start an assessment from this lab report."""
+    if entry.get("status") == "linked":
+        raise ValueError("This lab report already has an assessment.")
+    return create_job_from_inbox_item(entry["message_id"])
 
 
 # ---------------------------------------------------------------------------

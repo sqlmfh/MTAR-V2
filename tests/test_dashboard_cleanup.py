@@ -103,8 +103,10 @@ class DeleteAssessmentTests(_TempServices):
             ):
                 return mtar_services.run_gmail_intake()
 
+        mtar_services.set_auto_create(True)
         self.assertEqual(run(first)["created"], 1)
         job_id = self.store.list()[0].id
+        self.documents.save_bytes(job_id, "lab", self.store.get(job_id)["lab_filename"], b"%PDF-1.7 lab")
         mtar_services.delete_assessment(job_id)
 
         again = run(first)
@@ -113,12 +115,70 @@ class DeleteAssessmentTests(_TempServices):
         self.assertEqual((other_email["created"], other_email["skipped"]), (0, 1))
         self.assertEqual(self.store.list(), [])
 
+        # The lab report is still listed, so the assessment can be created again.
+        reports = mtar_services.lab_reports()
+        self.assertEqual([(r["status"], r["report_number"]) for r in reports], [("deleted", "2030805")])
+        self.assertEqual(mtar_services.lab_report_pdf(reports[0]), b"%PDF-1.7 lab")
+
         # Uploading the lab PDF by hand still works if it was deleted by mistake.
         with (
             patch.object(mtar_services, "parse_prolab_pdf", return_value=parsed),
             patch.object(mtar_services, "_generate_auto_drafts"),
         ):
             self.assertEqual(mtar_services.create_from_lab_upload(b"%PDF-1.7", "Scarlet.pdf")["status"], "created")
+
+
+class LabReportsPageTests(_TempServices):
+    def _run(self, attachment, parsed):
+        with (
+            patch.object(mtar_services, "gmail_client", _FakeGmailClient([attachment])),
+            patch.object(mtar_services, "inspect_attachment", return_value={"parsed": parsed}),
+            patch.object(mtar_services, "_generate_auto_drafts"),
+        ):
+            return mtar_services.run_gmail_intake()
+
+    def test_new_report_waits_until_the_consultant_creates_an_assessment(self):
+        parsed = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        attachment = GmailPdfAttachment("msg_1", "t", "lab@example.test", "Result", "Scarlet.pdf", b"%PDF-1.7 lab")
+        self.assertFalse(mtar_services.auto_create_enabled())
+
+        result = self._run(attachment, parsed)
+        self.assertEqual((result["waiting"], result["created"]), (1, 0))
+        self.assertEqual(self.store.list(), [])
+        self.assertEqual(self._run(attachment, parsed)["skipped"], 1)  # not listed twice
+
+        [entry] = mtar_services.lab_reports()
+        self.assertEqual(entry["status"], "new")
+        self.assertEqual(entry["customer"], "SCARLET HARPER")
+        self.assertEqual(entry["report_number"], "2030805")
+        self.assertEqual(entry["location"], parsed["metadata"]["test_location"])
+        self.assertEqual(mtar_services.lab_report_pdf(entry), b"%PDF-1.7 lab")
+
+        with (
+            patch.object(mtar_services, "parse_prolab_pdf", return_value=parsed),
+            patch.object(mtar_services, "_generate_auto_drafts"),
+        ):
+            job = mtar_services.create_assessment_from_report(entry)
+        self.assertEqual(job["client_name"], "Scarlet Harper")
+        [entry] = mtar_services.lab_reports()
+        self.assertEqual((entry["status"], entry["job_id"]), ("linked", job["id"]))
+        with self.assertRaises(ValueError):
+            mtar_services.create_assessment_from_report(entry)
+
+    def test_report_for_an_awaiting_lab_assessment_still_attaches_itself(self):
+        parsed = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        attachment = GmailPdfAttachment("msg_2", "t", "lab@example.test", "Result", "Scarlet.pdf", b"%PDF-1.7 lab")
+        with patch.object(mtar_services, "confident_job_match", return_value={"job_id": "x", "score": 9, "reasons": []}), \
+                patch.object(mtar_services, "import_lab_report", return_value=({"id": "job_x"}, False)) as imported:
+            result = self._run(attachment, parsed)
+        self.assertEqual((result["waiting"], result["imported"]), (0, 1))
+        imported.assert_called_once()
+
+    def test_dismissed_reports_leave_the_waiting_list(self):
+        parsed = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        self._run(GmailPdfAttachment("msg_3", "t", "lab@example.test", "Result", "Scarlet.pdf", b"%PDF-1.7"), parsed)
+        mtar_services.ignore_inbox_item("msg_3")
+        self.assertEqual([r["status"] for r in mtar_services.lab_reports()], ["dismissed"])
 
 
 class FinishedReportTests(_TempServices):

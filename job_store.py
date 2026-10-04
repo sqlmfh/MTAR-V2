@@ -160,6 +160,25 @@ class SQLiteJobStore:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(lab_inbox)").fetchall()}
+            if "details" not in columns:
+                # Test location, report date, etc. for the PRO-LAB reports list.
+                conn.execute("ALTER TABLE lab_inbox ADD COLUMN details TEXT NOT NULL DEFAULT '{}'")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
 
     def record_inbox_item(
         self,
@@ -172,12 +191,15 @@ class SQLiteJobStore:
         report_number: str = "",
         project_name: str = "",
         reason: str = "",
+        job_id: str = "",
+        details: dict | None = None,
     ) -> dict:
         """Record a Gmail PDF that was not imported automatically.
 
-        ``needs_review`` items look partly like PRO-LAB results and are shown in
-        the Lab Inbox. ``ignored`` items are unrelated PDFs, kept only so the
-        same message is not parsed again on every poll.
+        ``waiting`` items are PRO-LAB reports waiting for the consultant to
+        create an assessment. ``needs_review`` items look partly like PRO-LAB
+        results. ``ignored`` items are unrelated PDFs, kept only so the same
+        message is not parsed again on every poll.
         """
         now = utc_now_iso()
         with self._connect() as conn:
@@ -185,11 +207,14 @@ class SQLiteJobStore:
                 """
                 INSERT INTO lab_inbox (
                     message_id, status, filename, sender, subject,
-                    report_number, project_name, reason, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    report_number, project_name, reason, job_id, details, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO NOTHING
                 """,
-                (message_id, status, filename, sender, subject, report_number, project_name, reason, now, now),
+                (
+                    message_id, status, filename, sender, subject, report_number, project_name, reason,
+                    job_id, json.dumps(details or {}), now, now,
+                ),
             )
         return self.get_inbox_item(message_id) or {}
 
@@ -198,11 +223,13 @@ class SQLiteJobStore:
             row = conn.execute("SELECT * FROM lab_inbox WHERE message_id = ?", (message_id,)).fetchone()
         return dict(row) if row else None
 
-    def list_inbox(self, *, status: str = "needs_review") -> list[dict]:
+    def list_inbox(self, *, status: str | Iterable[str] = "needs_review") -> list[dict]:
+        statuses = [status] if isinstance(status, str) else list(status)
+        placeholders = ",".join("?" for _ in statuses)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM lab_inbox WHERE status = ? ORDER BY created_at DESC",
-                (status,),
+                f"SELECT * FROM lab_inbox WHERE status IN ({placeholders}) ORDER BY created_at DESC",
+                statuses,
             ).fetchall()
         return [dict(row) for row in rows]
 

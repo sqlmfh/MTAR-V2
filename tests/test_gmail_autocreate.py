@@ -40,6 +40,7 @@ class GmailAutoCreateEndToEndTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             store = SQLiteJobStore(Path(tmp) / "mtar.sqlite3")
+            store.set_setting(mtar_services.AUTO_CREATE_SETTING, "1")  # the switch on PRO-LAB Reports
             documents = FileDocumentStore(Path(tmp) / "documents")
             fake_gmail = _FakeGmailClient(attachment)
 
