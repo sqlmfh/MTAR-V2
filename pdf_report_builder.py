@@ -10,7 +10,17 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
-from report_builder import MOLD_DESCRIPTIONS
+from report_builder import (
+    CLEAR_FINDINGS,
+    MOLD_DESCRIPTIONS,
+    _area_samples,
+    _coc_line_text,
+    _photo_kind_groups,
+    _sample_display_name,
+    _sample_label as _sample_kind_label,
+    _sample_summary,
+    square_photo,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 ASSET_DIR = BASE_DIR / "assets"
@@ -228,52 +238,47 @@ def _new_page(c: canvas.Canvas, page_no: int, *, header: bool = False) -> tuple[
     return page_no, TOP
 
 
-PHOTO = 140      # square photo cell
-PHOTO_GAP = 4    # horizontal gap between photos
-ROW_PITCH = 146  # vertical distance between photo rows
-THERMAL_W, THERMAL_H = 208, 279
+PHOTO = 1.96 * 72  # every report photo is a 1.96in square
+PHOTO_GAP = 3       # horizontal gap between photos
+ROW_PITCH = PHOTO + 5
 
 
-def _photo_row(c: canvas.Canvas, entries: list[dict], top: float, *, size: float = PHOTO) -> float:
-    """Draw up to three photos centred as a row; returns the bottom (top coords)."""
-    entries = entries[:3]
-    if not entries:
-        return top
-    total = len(entries) * size + (len(entries) - 1) * PHOTO_GAP
-    x = (PAGE_W - total) / 2 if len(entries) < 3 else 92
-    for entry in entries:
-        _draw_contain(c, entry.get("content"), x, PAGE_H - top - size, size, size)
-        x += size + PHOTO_GAP
-    return top + size
+def _draw_square(c: canvas.Canvas, content, x: float, y: float):
+    square = square_photo(content)
+    if square:
+        _draw_contain(c, square, x, y, PHOTO, PHOTO)
 
 
-def _photo_grid(c: canvas.Canvas, entries: list[dict], top: float, *, max_rows: int) -> tuple[float, int]:
-    """Three-column grid starting at ``top``; returns (bottom, photos used)."""
-    count = min(len(entries), 3 * max_rows)
-    for index, entry in enumerate(entries[:count]):
-        row, col = divmod(index, 3)
-        x = 92 + col * (PHOTO + PHOTO_GAP)
-        _draw_contain(c, entry.get("content"), x, PAGE_H - top - row * ROW_PITCH - PHOTO, PHOTO, PHOTO)
-    rows = (count + 2) // 3
-    return top + rows * ROW_PITCH - (ROW_PITCH - PHOTO if rows else 0), count
+def _photo_rows(c: canvas.Canvas, entries: list[dict], top: float, page_no: int) -> tuple[float, int]:
+    """Centred rows of three square photos, starting a new page when a row won't fit."""
+    for start in range(0, len(entries), 3):
+        row = entries[start:start + 3]
+        if top + PHOTO > PAGE_H - BOTTOM - 20:
+            page_no, top = _continue_page(c, page_no)
+        total = len(row) * PHOTO + (len(row) - 1) * PHOTO_GAP
+        x = (PAGE_W - total) / 2
+        for entry in row:
+            _draw_square(c, entry.get("content"), x, PAGE_H - top - PHOTO)
+            x += PHOTO + PHOTO_GAP
+        top += ROW_PITCH
+    return top, page_no
 
 
-def _sample_for_area(job: dict, area_id: str) -> dict | None:
-    return next((s for s in job.get("samples", []) if s.get("area_id") == area_id), None)
+def _continue_page(c: canvas.Canvas, page_no: int) -> tuple[int, float]:
+    _footer(c, page_no)
+    c.showPage()
+    _tdlr_mark(c)
+    return page_no + 1, 74
+
+
+def _fits(c: canvas.Canvas, top: float, needed: float, page_no: int) -> tuple[float, int]:
+    if top + needed > PAGE_H - BOTTOM - 20:
+        page_no, top = _continue_page(c, page_no)
+    return top, page_no
 
 
 def _outdoor_sample(job: dict) -> dict | None:
     return next((s for s in job.get("samples", []) if s.get("outdoor_control")), None)
-
-
-def _sample_label(sample: dict | None) -> str:
-    if not sample:
-        return ""
-    line = sample.get("lab_coc_line") or ""
-    if line:
-        # The customer report spaces the COC line as "2030805 - 1".
-        return " - ".join(part.strip() for part in line.split("-", 1))
-    return sample.get("name") or ""
 
 
 def _sample_caption(c: canvas.Canvas, title: str, sample: dict | None, top: float) -> float:
@@ -281,7 +286,7 @@ def _sample_caption(c: canvas.Canvas, title: str, sample: dict | None, top: floa
     c.setFont(BOLD, BODY_SIZE)
     c.drawCentredString(PAGE_W / 2, _y(top), _safe_text(title).upper())
     top += LEADING
-    label, value = "COC / LINE #: ", _sample_label(sample)
+    label, value = "COC / LINE #: ", _coc_line_text(sample)
     total = c.stringWidth(label, ITALIC, BODY_SIZE) + c.stringWidth(value, BOLD_ITALIC, BODY_SIZE)
     x = (PAGE_W - total) / 2
     c.setFont(ITALIC, BODY_SIZE)
@@ -289,13 +294,6 @@ def _sample_caption(c: canvas.Canvas, title: str, sample: dict | None, top: floa
     c.setFont(BOLD_ITALIC, BODY_SIZE)
     c.drawString(x + c.stringWidth(label, ITALIC, BODY_SIZE), _y(top), value)
     return top + LEADING + 2
-
-
-def _letter_finding(area: dict) -> str:
-    finding = _safe_text(area.get("finding", ""))
-    if finding == "Mold levels not elevated":
-        return "No mold detected"
-    return finding
 
 
 def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
@@ -321,7 +319,8 @@ def _draw_cover(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
 
     property_photos = _photos(photos.get("property"))
     if property_photos:
-        _draw_contain(c, property_photos[0].get("content"), 126, PAGE_H - 577, 360, 360)
+        cover = square_photo(property_photos[0].get("content"), pixels=1200) or property_photos[0].get("content")
+        _draw_contain(c, cover, 126, PAGE_H - 577, 360, 360)
 
     _heading(c, "Client & Property:", 595, 15)
     c.setFillColor(TEXT)
@@ -396,7 +395,9 @@ def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
             top,
         ) + PARAGRAPH_GAP
         for area in job.get("areas", []):
-            top = _bullet(c, f"{area.get('name', '')} — {_letter_finding(area)}", top)
+            if area.get("finding") in CLEAR_FINDINGS:
+                continue
+            top = _bullet(c, f"{area.get('name', '')} — {_safe_text(area.get('finding', ''))}", top)
         top += PARAGRAPH_GAP
         top = _rich(
             c,
@@ -422,15 +423,17 @@ def _draw_letter_page(c: canvas.Canvas, job: dict, page_no: int):
     _footer(c, page_no)
 
 
-def _draw_outdoor_page(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
+def _draw_outdoor_page(c: canvas.Canvas, job: dict, photos: dict, page_no: int) -> int:
     _tdlr_mark(c)
     top = _heading(c, "Outdoor Control Sample", 96)
     top = _rich(c, "An air sample is taken outside to serve as a baseline for all other air samples to be compared against.", top)
-    top = _sample_caption(c, "Outdoor Control Sample", _outdoor_sample(job), top + PARAGRAPH_GAP)
+    outdoor = _outdoor_sample(job)
+    if outdoor:
+        top = _sample_caption(c, _sample_display_name(outdoor), outdoor, top + PARAGRAPH_GAP)
+    top, page_no = _photo_rows(c, _photos(photos.get("outdoor")), top + 2, page_no)
 
-    top = _photo_row(c, _photos(photos.get("outdoor"))[:3], top + 2)
-    top = _heading(c, "Visual Observations & Moisture Readings", top + 13)
-
+    top, page_no = _fits(c, top + 13, 60, page_no)
+    top = _heading(c, "Visual Observations", top)
     humidity = job.get("humidity")
     if humidity is None:
         runs = [("Environmental Conditions:", BOLD), ("Indoor relative humidity (rH) was not entered. Consultant review required.", BODY)]
@@ -444,73 +447,47 @@ def _draw_outdoor_page(c: canvas.Canvas, job: dict, photos: dict, page_no: int):
             (f"which is {status}.", BODY),
         ]
     top = _rich(c, runs, top)
-
-    environment_photos = _photos(photos.get("environment"))
-    if environment_photos:
-        _photo_row(c, environment_photos[:1], top + 12)
+    _, page_no = _photo_rows(c, _photos(photos.get("environment")), top + 12, page_no)
     _footer(c, page_no)
-
-
-def _area_photo_groups(entries: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
-    sampling, inspection, thermal = [], [], []
-    for entry in entries:
-        kind = (entry.get("kind") or "inspection").lower()
-        if kind == "thermal":
-            thermal.append(entry)
-        elif kind == "sampling":
-            sampling.append(entry)
-        else:
-            inspection.append(entry)
-    return sampling, inspection, thermal
+    return page_no
 
 
 def _draw_area_pages(c: canvas.Canvas, job: dict, photos: dict, page_no: int) -> int:
     for area in job.get("areas", []):
-        entries = _photos(photos.get(area.get("id")))
-        sampling, inspection, thermal = _area_photo_groups(entries)
-        sample = _sample_for_area(job, area.get("id"))
+        sampling, inspection, thermal = _photo_kind_groups(_photos(photos.get(area.get("id"))))
 
         page_no += 1
         _tdlr_mark(c)
         top = _heading(c, area.get("name", "Inspection Area"), 72)
-        if area.get("lab_summary"):
-            top = _rich(c, _labeled(area["lab_summary"]), top)
+
+        # Each sample: bold label and lab sentence, then its name and COC line.
+        samples = _area_samples(job, area.get("id"))
+        for index, sample in enumerate(samples):
+            top, page_no = _fits(c, top + (PARAGRAPH_GAP if index else 0), 4 * LEADING, page_no)
+            top = _rich(c, [(_sample_kind_label(sample), BOLD), (_sample_summary(sample, area, len(samples) == 1), BODY)], top)
+            top = _sample_caption(c, _sample_display_name(sample), sample, top + PARAGRAPH_GAP)
+        if not samples and area.get("lab_summary"):
+            top = _rich(c, _labeled(area["lab_summary"]), top) + PARAGRAPH_GAP
+        top, page_no = _photo_rows(c, sampling, top + 2, page_no)
+
         if area.get("description"):
+            top, page_no = _fits(c, top + 12, 3 * LEADING, page_no)
             top = _rich(c, [("Visual Observations:", BOLD), (area["description"], BODY)], top)
-        top = _sample_caption(c, area.get("name", ""), sample, top + PARAGRAPH_GAP)
-
-        if sampling:
-            top = _photo_row(c, sampling[:3], top + 2) + 14
-
         moisture = area.get("moisture_notes") or "Moisture assessment not entered. Consultant review required."
+        top, page_no = _fits(c, top + 12, 3 * LEADING, page_no)
         top = _rich(c, [("Moisture Assessment:", BOLD), (moisture, BODY)], top) + 12
+        top, page_no = _photo_rows(c, inspection, top, page_no)
 
-        rows_left = max(0, int((PAGE_H - BOTTOM - 40 - top + (ROW_PITCH - PHOTO)) // ROW_PITCH))
-        _, used = _photo_grid(c, inspection, top, max_rows=min(rows_left, 4))
-        remaining = inspection[used:]
+        if thermal or area.get("thermal_notes"):
+            notes = area.get("thermal_notes") or ""
+            label, sep, rest = notes.partition(":")
+            if sep and label.strip().lower() == "thermal imaging":
+                notes = rest.strip()
+            top, page_no = _fits(c, top + 12, 3 * LEADING, page_no)
+            top = _rich(c, [("Thermal Imaging:", BOLD), (notes, BODY)], top) + 12
+            top, page_no = _photo_rows(c, thermal, top, page_no)
+
         _footer(c, page_no)
-
-        while remaining:
-            c.showPage()
-            page_no += 1
-            _tdlr_mark(c)
-            _, used = _photo_grid(c, remaining, 74, max_rows=4)
-            remaining = remaining[used:]
-            _footer(c, page_no)
-
-        if thermal:
-            c.showPage()
-            page_no += 1
-            _tdlr_mark(c)
-            notes = area.get("thermal_notes") or "Thermal Imaging: Consultant review required before final release."
-            _rich(c, _labeled(notes), 72)
-            for index, entry in enumerate(thermal[:4]):
-                row, col = divmod(index, 2)
-                x = 92 + col * (THERMAL_W + 3)
-                y_top = 113 + row * (THERMAL_H + 5)
-                _draw_contain(c, entry.get("content"), x, PAGE_H - y_top - THERMAL_H, THERMAL_W, THERMAL_H)
-            _footer(c, page_no)
-
         c.showPage()
     return page_no
 
@@ -657,14 +634,7 @@ def _draw_terms(c: canvas.Canvas, page_no: int):
     for title, body in terms:
         top = _rich(c, [(f"{title}:", BOLD), (body, BODY)], top, size=10, leading=13) + 10
 
-    top += 26
-    c.setFillColor(TEXT)
-    c.setFont(BOLD_ITALIC, BODY_SIZE)
-    c.drawCentredString(PAGE_W / 2, _y(top), "— Laboratory Report Attached —")
-    top += 24
-    c.setFont(BODY, BODY_SIZE)
-    c.drawCentredString(PAGE_W / 2, _y(top), "PRO-LAB Certificate of Mold Analysis follows this page")
-    top = _heading(c, "Mold Testing and Removal", top + 48, 20, center=True)
+    top = _heading(c, "Mold Testing and Removal", top + 50, 20, center=True)
     c.setFillColor(TEXT)
     c.setFont(BODY, BODY_SIZE)
     c.drawCentredString(PAGE_W / 2, _y(top + 2), "2031 John West Rd. #119 | Dallas, TX 75228")
@@ -677,7 +647,7 @@ def create_customer_pdf(job: dict, photos: dict | None = None) -> BytesIO:
 
     The layout follows the Scarlet customer report: cover, sample summary,
     consultant letter, outdoor/environment page, inspection-area/photo pages,
-    thermal pages, lab analysis, conclusions/recommendations, and terms.
+    lab analysis, conclusions/recommendations, and terms.
     """
     photos = photos or {}
     output = BytesIO()
@@ -696,7 +666,7 @@ def create_customer_pdf(job: dict, photos: dict | None = None) -> BytesIO:
     c.showPage()
 
     page_no += 1
-    _draw_outdoor_page(c, job, photos, page_no)
+    page_no = _draw_outdoor_page(c, job, photos, page_no)
     c.showPage()
 
     # Area renderer manages its own page endings.

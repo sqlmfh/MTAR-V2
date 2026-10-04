@@ -8,6 +8,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.shared import Inches, Pt, RGBColor
+from PIL import Image, ImageOps
 
 from models import sample_location
 
@@ -160,23 +161,117 @@ def _photo_entries(value) -> list[dict]:
     return [{"content": value, "caption": ""}]
 
 
-def _add_report_photo(doc: Document, entry: dict, width=Inches(3.4)) -> None:
-    content = entry.get("content")
-    if not content:
-        return
+REPORT_PHOTO = Inches(1.96)
+# Findings that mean the area is fine; the consultant letter leaves these out.
+CLEAR_FINDINGS = {"Mold levels not elevated", "No mold detected"}
+
+
+def square_photo(content, pixels: int = 600) -> BytesIO | None:
+    """Centre-crop a photo to a square so every report photo is the same size."""
     try:
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.add_run().add_picture(content, width=width)
-        caption = (entry.get("caption") or "").strip()
-        if caption:
-            cp = make_tight(doc.add_paragraph())
-            cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = cp.add_run(caption)
-            run.italic = True
-            run.font.size = Pt(9)
+        if hasattr(content, "seek"):
+            content.seek(0)
+        raw = content.read() if hasattr(content, "read") else content
+        with Image.open(BytesIO(raw)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            side = min(image.size)
+            left, top = (image.width - side) // 2, (image.height - side) // 2
+            image = image.crop((left, top, left + side, top + side))
+            image = image.resize((min(side, pixels),) * 2, Image.LANCZOS)
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=85)
+        output.seek(0)
+        return output
     except Exception:
-        pass
+        return None
+
+
+def _add_photo_rows(doc: Document, entries: list[dict]) -> None:
+    """1.96in square photos, three to a centred row, with no blank lines between rows."""
+    squares = [square for square in (square_photo(e.get("content")) for e in entries) if square]
+    for start in range(0, len(squares), 3):
+        row = make_tight(doc.add_paragraph())
+        row.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        row.paragraph_format.line_spacing = 1.0
+        row.paragraph_format.space_after = Pt(4)
+        for index, square in enumerate(squares[start:start + 3]):
+            if index:
+                row.add_run(" ")
+            picture = row.add_run().add_picture(square, width=REPORT_PHOTO, height=REPORT_PHOTO)
+            # Explicit zero padding: without it LibreOffice and Google Docs pad
+            # each picture and only two fit on a line.
+            for side in ("distT", "distB", "distL", "distR"):
+                picture._inline.set(side, "0")
+
+
+def _area_samples(job: dict, area_id: str) -> list[dict]:
+    return [s for s in job.get("samples", []) if s.get("area_id") == area_id and not s.get("outdoor_control")]
+
+
+def _coc_line_text(sample: dict | None) -> str:
+    # The customer report spaces the COC line as "2030805 - 1".
+    line = str((sample or {}).get("lab_coc_line") or "").strip()
+    return " - ".join(part.strip() for part in line.split("-", 1)) if line else ""
+
+
+def _sample_label(sample: dict) -> str:
+    return "Air Sample:" if sample.get("type") == "Air Sample" else "Swab Sample:"
+
+
+def _sample_summary(sample: dict, area: dict, only_sample: bool) -> str:
+    """The lab sentence shown after the bold "Air Sample:" / "Swab Sample:" label."""
+    determination = str(sample.get("lab_determination") or "").strip().upper()
+    if not determination:
+        if only_sample and area.get("lab_summary"):
+            return area["lab_summary"].split(":", 1)[-1].strip()
+        return "Laboratory results pending."
+    if sample.get("type") == "Air Sample":
+        if determination == "NOT ELEVATED":
+            return "Mold levels indoors were lower than mold levels observed in Outdoor Control Sample. Determination is NOT ELEVATED."
+        if determination == "ELEVATED":
+            return "Mold levels were elevated compared with the outdoor control sample. Determination is ELEVATED."
+        return f"Laboratory determination is {determination}."
+    fungi = [name for name, value in (sample.get("lab_fungi") or {}).items() if value not in (None, "", 0, False)]
+    if fungi:
+        joined = fungi[0] if len(fungi) == 1 else (
+            f"{fungi[0]} and {fungi[1]}" if len(fungi) == 2 else ", ".join(fungi[:-1]) + f", and {fungi[-1]}"
+        )
+        return f"Sample returned positive for {joined} growth. Determination is {determination}."
+    return f"Laboratory determination is {determination}."
+
+
+def _photo_kind_groups(entries: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split an area's photos into (sampling, moisture/inspection, thermal)."""
+    sampling, inspection, thermal = [], [], []
+    for entry in entries:
+        kind = (entry.get("kind") or "inspection").lower()
+        (thermal if kind == "thermal" else sampling if kind == "sampling" else inspection).append(entry)
+    return sampling, inspection, thermal
+
+
+def _add_sample_caption(doc: Document, name: str, sample: dict | None) -> None:
+    """Centred bold sample name with the italic COC / LINE # under it."""
+    title = make_tight(doc.add_paragraph())
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_before = Pt(10)
+    title.add_run(name.upper()).bold = True
+    line = make_tight(doc.add_paragraph())
+    line.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    line.add_run("COC / LINE #: ").italic = True
+    value = line.add_run(_coc_line_text(sample))
+    value.italic = True
+    value.bold = True
+
+
+def _section_title(doc: Document, text: str, *, space_before: int = 0):
+    title = make_tight(doc.add_paragraph())
+    title.paragraph_format.space_before = Pt(space_before)
+    r = title.add_run(text)
+    r.font.name = "Bebas Neue"
+    r.bold = True
+    r.font.color.rgb = RGBColor(24, 64, 88)
+    r.font.size = Pt(17)
+    return title
 
 
 def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -> BytesIO:
@@ -227,14 +322,8 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
         try:
             p = make_tight(doc.add_paragraph())
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.add_run().add_picture(cover_entry.get("content"), width=Inches(5))
-            cover_caption = (cover_entry.get("caption") or "").strip()
-            if cover_caption:
-                cp = make_tight(doc.add_paragraph())
-                cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                rr = cp.add_run(cover_caption)
-                rr.italic = True
-                rr.font.size = Pt(9)
+            cover = square_photo(cover_entry.get("content"), pixels=1200) or cover_entry.get("content")
+            p.add_run().add_picture(cover, width=Inches(5))
         except Exception:
             pass
 
@@ -271,12 +360,7 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
     run.font.size = Pt(15)
     for index, sample in enumerate(job.get("samples", []), 1):
         prefix = "Exterior control sample" if sample.get("outdoor_control") else f"Sample {index - 1}"
-        sample_name = _sample_display_name(sample)
-        area_name = _assigned_area_name(sample, job.get("areas", []))
-        if sample.get("outdoor_control"):
-            info4.add_run(f"{prefix}: {sample_name} ({sample['type']})\n")
-        else:
-            info4.add_run(f"{prefix}: {sample_name} ({sample['type']}) — assigned to {area_name}\n")
+        info4.add_run(f"{prefix}: {_sample_display_name(sample)} ({sample['type']})\n")
 
     doc.add_page_break()
     letter_header = make_tight(doc.add_paragraph())
@@ -322,7 +406,7 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
         r.italic = True
         results_p.add_run(" in the following areas:")
         for area in job.get("areas", []):
-            if not area.get("name"):
+            if not area.get("name") or area.get("finding") in CLEAR_FINDINGS:
                 continue
             bullet = doc.add_paragraph(style="List Bullet")
             bullet.add_run(f"{area['name']} — {area.get('finding', '')}")
@@ -364,13 +448,14 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
     make_tight(doc.add_paragraph("TDLR MAC #2189 (Exp. 10/24/2027)"))
 
     doc.add_page_break()
-    obs_title = make_tight(doc.add_paragraph())
-    r = obs_title.add_run("Visual Observations & Moisture Readings")
-    r.font.name = "Bebas Neue"
-    r.bold = True
-    r.font.color.rgb = RGBColor(24, 64, 88)
-    r.font.size = Pt(17)
+    _section_title(doc, "Outdoor Control Sample")
+    make_top_tight(doc.add_paragraph("An air sample is taken outside to serve as a baseline for all other air samples to be compared against."))
+    outdoor = next((sample for sample in job.get("samples", []) if sample.get("outdoor_control")), None)
+    if outdoor:
+        _add_sample_caption(doc, _sample_display_name(outdoor), outdoor)
+    _add_photo_rows(doc, _photo_entries(photos.get("outdoor")))
 
+    _section_title(doc, "Visual Observations", space_before=14)
     env_p = make_top_tight(doc.add_paragraph())
     r = env_p.add_run("Environmental Conditions: ")
     r.bold = True
@@ -389,40 +474,56 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
             env_p.add_run("above the recommended range (30-50%) and conducive to microbial growth.")
         else:
             env_p.add_run("within the recommended range (30-50%).")
-
-    ocs_title = make_tight(doc.add_paragraph())
-    r = ocs_title.add_run("Outdoor Control Sample")
-    r.font.name = "Bebas Neue"
-    r.bold = True
-    r.font.color.rgb = RGBColor(24, 64, 88)
-    r.font.size = Pt(17)
-    make_top_tight(doc.add_paragraph("An air sample is taken outside to serve as a baseline for all other air samples to be compared against."))
+    _add_photo_rows(doc, _photo_entries(photos.get("environment")))
 
     for area in job.get("areas", []):
         if not area.get("name"):
             continue
         doc.add_page_break()
-        area_title = make_tight(doc.add_paragraph())
-        r = area_title.add_run(area["name"])
-        r.font.name = "Bebas Neue"
-        r.bold = True
-        r.font.color.rgb = RGBColor(24, 64, 88)
-        r.font.size = Pt(17)
-        if area.get("lab_summary"):
-            doc.add_paragraph(area["lab_summary"])
+        _section_title(doc, area["name"])
+        sampling, inspection, thermal = _photo_kind_groups(_photo_entries(photos.get(area["id"])))
+
+        # Each sample gets its bold label, lab sentence and COC line; the
+        # area's sampling photos follow its samples.
+        samples = _area_samples(job, area["id"])
+        for sample in samples:
+            p = make_top_tight(doc.add_paragraph())
+            p.paragraph_format.space_before = Pt(4)
+            p.add_run(_sample_label(sample) + " ").bold = True
+            p.add_run(_sample_summary(sample, area, len(samples) == 1))
+            _add_sample_caption(doc, _sample_display_name(sample), sample)
+        if not samples and area.get("lab_summary"):
+            label, _, rest = area["lab_summary"].partition(":")
+            p = make_top_tight(doc.add_paragraph())
+            p.add_run(f"{label}: ").bold = True
+            p.add_run(rest.strip())
+        _add_photo_rows(doc, sampling)
+
         if area.get("description"):
-            p = doc.add_paragraph()
-            rr = p.add_run("Visual Observations: ")
-            rr.bold = True
+            p = make_top_tight(doc.add_paragraph())
+            p.paragraph_format.space_before = Pt(10)
+            p.add_run("Visual Observations: ").bold = True
             p.add_run(area["description"])
-        if area.get("moisture_notes"):
-            p = doc.add_paragraph()
-            rr = p.add_run("Moisture Assessment: ")
-            rr.bold = True
-            p.add_run(area["moisture_notes"])
-        area_photos = _photo_entries(photos.get(area["id"]))
-        for entry in area_photos:
-            _add_report_photo(doc, entry)
+        p = make_top_tight(doc.add_paragraph())
+        p.paragraph_format.space_before = Pt(10)
+        p.add_run("Moisture Assessment: ").bold = True
+        moisture = p.add_run(area.get("moisture_notes") or "Moisture assessment not entered. Consultant review required.")
+        if not area.get("moisture_notes"):
+            moisture.italic = True
+            moisture.font.color.rgb = RGBColor(220, 53, 69)
+        _add_photo_rows(doc, inspection)
+
+        if thermal or area.get("thermal_notes"):
+            p = make_top_tight(doc.add_paragraph())
+            p.paragraph_format.space_before = Pt(10)
+            label, sep, rest = (area.get("thermal_notes") or "").partition(":")
+            if sep and label.strip().lower() == "thermal imaging":
+                notes = rest.strip()
+            else:
+                notes = area.get("thermal_notes") or ""
+            p.add_run("Thermal Imaging: ").bold = True
+            p.add_run(notes)
+            _add_photo_rows(doc, thermal)
 
     doc.add_page_break()
     lab_title = make_tight(doc.add_paragraph())
@@ -632,16 +733,6 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
         rr.bold = True
         rr.font.size = Pt(10)
         p.add_run(body).font.size = Pt(10)
-
-    doc.add_paragraph()
-    lab_ref = doc.add_paragraph()
-    lab_ref.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = lab_ref.add_run("— Laboratory Report Attached —")
-    r.bold = True
-    r.italic = True
-    lab_ref2 = doc.add_paragraph()
-    lab_ref2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    lab_ref2.add_run("PRO-LAB Certificate of Mold Analysis follows this page")
 
     doc.add_paragraph()
     company_footer = doc.add_paragraph()

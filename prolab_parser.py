@@ -71,7 +71,8 @@ def _extract_test_location(lines: list[str]) -> str:
     for i, line in enumerate(lines):
         if _upper(line).rstrip(":") == "TEST LOCATION":
             parts = []
-            for next_line in lines[i + 1 : i + 4]:
+            # A long city name can push the ZIP onto a line of its own.
+            for next_line in lines[i + 1 : i + 5]:
                 if _upper(next_line).startswith(("REPORT NUMBER", "RECEIVED DATE", "REPORT DATE")):
                     break
                 parts.append(next_line)
@@ -584,12 +585,41 @@ def _parse_lab_date(value: str):
     return None
 
 
+US_STATES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS",
+    "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC",
+    "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+}
+
+
 def _split_test_location(value: str) -> dict:
     """Split a PRO-LAB test-location string into editable property fields."""
     value = _norm(value)
     result = {"address": "", "city": "", "state": "", "zip": ""}
     if not value:
         return result
+
+    # The ZIP can sit on its own line ("…, TX, 76180") or follow the city with
+    # no state ("…, North Richland Hills 76180"). Take it from the end first.
+    value = re.sub(r"\bTexas\b(?=[\s,.]*\d{5}(?:-\d{4})?\s*$)", "TX", value, flags=re.I)
+    tail = re.search(r"(?:\b([A-Z]{2})[\s,.]*)?(?<!\d)(\d{5}(?:-\d{4})?)\s*$", value, re.I)
+    if tail and tail.group(1) and tail.group(1).upper() not in US_STATES:
+        # "…Glow Ln 76180": the two letters before the ZIP are not a state.
+        tail = re.search(r"()(?<!\d)(\d{5}(?:-\d{4})?)\s*$", value)
+    if tail:
+        result["zip"] = tail.group(2)
+        if tail.group(1):
+            result["state"] = tail.group(1).upper()
+        parts = [p.strip() for p in value[: tail.start()].split(",") if p.strip()]
+        if len(parts) >= 2:
+            result["address"] = ", ".join(parts[:-1])
+            result["city"] = parts[-1]
+            return result
+        if parts and result["state"]:
+            # "123 Main St Dallas TX 75201": no comma, so the city can't be split off.
+            result["address"] = parts[0]
+            return result
+        result = {"address": "", "city": "", "state": "", "zip": ""}
 
     parts = [p.strip() for p in value.split(",") if p.strip()]
     if parts:

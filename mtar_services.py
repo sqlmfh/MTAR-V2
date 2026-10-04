@@ -15,7 +15,6 @@ import threading
 import time
 from uuid import uuid4
 
-import fitz
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
@@ -88,8 +87,14 @@ REPORT_OUTCOMES = [
 
 PHOTO_KINDS = {
     "sampling": "Sampling",
-    "inspection": "Inspection / Moisture",
+    "inspection": "Moisture assessment",
     "thermal": "Thermal Imaging",
+}
+
+# The two moisture-assessment sentences the inspector picks between per area.
+MOISTURE_STATES = {
+    "dry": "No surfaces were wet in this area.",
+    "wet": "Surfaces were wet in this area.",
 }
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -116,6 +121,20 @@ def sample_name(sample: dict) -> str:
 
 def save_job(job: dict) -> dict:
     return store.save(job)
+
+
+def moisture_sentence(state: str | None, highest: float | None, extra: str = "") -> str:
+    """Report text for an area's moisture assessment, e.g.
+    "No surfaces were wet in this area. Highest moisture content observed was 14%."
+    """
+    parts = []
+    if state in MOISTURE_STATES:
+        parts.append(MOISTURE_STATES[state])
+        if highest is not None:
+            parts.append(f"Highest moisture content observed was {float(highest):g}%.")
+    if str(extra or "").strip():
+        parts.append(str(extra).strip())
+    return " ".join(parts)
 
 
 def advance_status_if(job: dict, current_status: str, target_status: str) -> dict:
@@ -751,13 +770,6 @@ def final_issues(job: dict) -> list[str]:
     return final_report_issues(job, lab_pdf_present=lab_pdf_present(job))
 
 
-def append_lab_certificate(report_pdf: bytes, lab_pdf: bytes) -> bytes:
-    """Final package: generated assessment followed by the unchanged PRO-LAB PDF."""
-    with fitz.open(stream=report_pdf, filetype="pdf") as package, fitz.open(stream=lab_pdf, filetype="pdf") as lab:
-        package.insert_pdf(lab)
-        return package.tobytes(garbage=3, deflate=True)
-
-
 def generate_review_docx(job: dict) -> tuple[dict, str, bytes]:
     output = create_report(job, report_photos(job), lab_pdf_bytes(job)).getvalue()
     filename = f"{client_file_stem(job)}_Mold_Assessment_DRAFT.docx"
@@ -787,12 +799,11 @@ def generate_final_docx(job: dict) -> tuple[dict, str, bytes]:
 
 
 def generate_final_pdf(job: dict) -> tuple[dict, str, bytes]:
-    """Customer PDF with the original PRO-LAB certificate appended."""
+    """Customer PDF. The PRO-LAB certificate is emailed as its own attachment."""
     issues = final_issues(job)
     if issues:
         raise ValueError("Final PDF blocked: " + "; ".join(issues))
-    report = create_customer_pdf(job, report_photos(job)).getvalue()
-    output = append_lab_certificate(report, lab_pdf_bytes(job))
+    output = create_customer_pdf(job, report_photos(job)).getvalue()
     filename = f"{client_file_stem(job)}_Mold_Assessment_FINAL.pdf"
     documents.save_bytes(job["id"], "reports", filename, output)
     job["latest_final_pdf_filename"] = filename

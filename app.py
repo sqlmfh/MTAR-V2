@@ -5,7 +5,7 @@ and passes user input to those services.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dt_time, timezone
+from datetime import date, datetime, timezone
 import os
 import threading
 from zoneinfo import ZoneInfo
@@ -118,13 +118,6 @@ def as_date(value) -> date | None:
         return value
     try:
         return date.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def as_time(value) -> dt_time | None:
-    try:
-        return datetime.strptime(str(value), "%H:%M").time()
     except (TypeError, ValueError):
         return None
 
@@ -352,16 +345,6 @@ def render_overview(job: dict) -> None:
         )
         temperature = d4.number_input("Temperature (°F)", value=None if job.get("temperature") is None else float(job["temperature"]), placeholder="Optional")
 
-        s1, s2 = st.columns([1, 3])
-        sampling_time = s1.time_input("Sampling time", as_time(job.get("sampling_time")), step=300)
-        with s2:
-            st.markdown("Weather (for the COC)")
-            w = st.columns(4)
-            fog = w[0].checkbox("Fog", bool(job.get("weather_fog")))
-            rain = w[1].checkbox("Rain", bool(job.get("weather_rain")))
-            snow = w[2].checkbox("Snow", bool(job.get("weather_snow")))
-            wind = w[3].checkbox("Wind", bool(job.get("weather_wind")))
-
         general = st.text_area("General observations", job.get("general_observations", ""))
         if st.form_submit_button("Save", type="primary"):
             job.update(
@@ -375,11 +358,6 @@ def render_overview(job: dict) -> None:
                     "report_date": report_date,
                     "humidity": humidity,
                     "temperature": temperature,
-                    "sampling_time": sampling_time.strftime("%H:%M") if sampling_time else "",
-                    "weather_fog": fog,
-                    "weather_rain": rain,
-                    "weather_snow": snow,
-                    "weather_wind": wind,
                     "general_observations": general,
                 }
             )
@@ -426,7 +404,26 @@ def render_areas(job: dict) -> None:
                 options = svc.FINDING_OPTIONS if current in svc.FINDING_OPTIONS else svc.FINDING_OPTIONS + [current]
                 finding = c2.selectbox("Consultant finding", options, index=options.index(current))
                 description = st.text_area("Visual observations (inspector)", area.get("description", ""))
-                moisture = st.text_area("Moisture assessment (inspector)", area.get("moisture_notes", ""))
+
+                st.markdown("**Moisture assessment**")
+                m1, m2 = st.columns([3, 1])
+                states = list(svc.MOISTURE_STATES)
+                state = m1.radio(
+                    "Moisture assessment", states, format_func=svc.MOISTURE_STATES.get, horizontal=True,
+                    index=states.index(area["moisture_state"]) if area.get("moisture_state") in states else None,
+                    label_visibility="collapsed",
+                )
+                highest = m2.number_input(
+                    "Highest moisture content (%)", min_value=0.0, max_value=100.0, step=1.0,
+                    value=None if area.get("moisture_highest") is None else float(area["moisture_highest"]),
+                    format="%.1f", placeholder="e.g. 14",
+                )
+                # Notes typed before the template existed carry over as the extra note.
+                legacy = "" if area.get("moisture_state") or "moisture_extra" in area else area.get("moisture_notes", "")
+                extra = st.text_input("Extra moisture note (optional)", area.get("moisture_extra", legacy))
+                if area.get("moisture_notes"):
+                    st.caption(f"In the report: {area['moisture_notes']}")
+
                 thermal = st.text_area("Thermal imaging notes", area.get("thermal_notes", ""))
                 if st.form_submit_button("Save area", type="primary"):
                     area.update(
@@ -434,13 +431,45 @@ def render_areas(job: dict) -> None:
                             "name": name.strip(),
                             "finding": finding,
                             "description": description,
-                            "moisture_notes": moisture,
+                            "moisture_state": state,
+                            "moisture_highest": highest,
+                            "moisture_extra": extra.strip(),
+                            "moisture_notes": svc.moisture_sentence(state, highest, extra),
                             "thermal_notes": thermal,
                         }
                     )
                     svc.save_job(job)
                     flash("success", f"Saved {name or 'area'}.")
+                    if state and highest is None:
+                        flash("warning", f"Add the highest moisture reading for {name or 'this area'}.")
                     st.rerun()
+
+            _moisture_photos(job, area)
+
+
+def _moisture_photos(job: dict, area: dict) -> None:
+    """Small previews of the area's moisture photos (from Drive or uploaded)."""
+    photos = [
+        p for p in job.get("photos", [])
+        if p.get("role") == "area" and p.get("area_id") == area["id"] and p.get("kind", "inspection") == "inspection"
+    ]
+    if not photos:
+        st.caption(
+            "No moisture photos yet. Photos in this area's Drive folder (or a Moisture subfolder inside it) "
+            "show up here once Drive is linked on the Photos tab."
+        )
+        return
+    from_drive = sum(1 for p in photos if p.get("drive_file_id"))
+    st.caption(
+        f"Moisture assessment photos · {len(photos)}"
+        + (f" ({from_drive} from Google Drive)" if from_drive else "")
+        + " · they print under Moisture Assessment in the report. Manage them on the Photos tab."
+    )
+    columns = st.columns(8)
+    for i, photo in enumerate(photos):
+        content = svc.photo_bytes(job, photo)
+        if content:
+            columns[i % 8].image(content, width="stretch")
 
 
 def render_samples(job: dict) -> None:
@@ -493,7 +522,10 @@ def render_samples(job: dict) -> None:
             with st.form(f"sample_{sample['id']}"):
                 c = st.columns(4)
                 name = c[0].text_input("Sample name / location", sample.get("name", ""))
-                serial = c[1].text_input("Serial number", sample.get("serial_number") or sample.get("lab_serial_number", ""))
+                coc_line = c[1].text_input(
+                    "COC / Line #", sample.get("lab_coc_line", ""), placeholder="From the lab report",
+                    help="The COC and line number PRO-LAB printed for this sample, e.g. 2033849-2. It prints under the sample in the report.",
+                )
                 code = c[2].text_input("Sample type code", sample.get("sample_type_code", ""))
                 if protected:
                     c[3].text_input("Assigned area", "Outdoor Control", disabled=True)
@@ -509,7 +541,7 @@ def render_samples(job: dict) -> None:
                     minutes = f[1].number_input("Sampling minutes", min_value=0.0, value=float(sample.get("flow_rate_minutes") or 0))
                     f[2].metric("Total volume", f"{flow * minutes:g} L")
                 if st.form_submit_button("Save sample", type="primary"):
-                    sample.update({"name": name.strip(), "serial_number": serial.strip(), "sample_type_code": code.strip().upper()})
+                    sample.update({"name": name.strip(), "lab_coc_line": coc_line.strip(), "sample_type_code": code.strip().upper()})
                     if not protected:
                         sample["area_id"] = area_id
                     if flow is not None:
@@ -528,27 +560,26 @@ def _update_photo(job_id: str, photo_id: str, field: str, widget_key: str) -> No
     svc.save_job(job)
 
 
-def _photo_grid(job: dict, photos: list[dict], *, with_kind: bool = False) -> None:
-    columns = st.columns(3)
+SHORT_KINDS = {"sampling": "Sample", "inspection": "Moisture", "thermal": "Thermal"}
+
+
+def _photo_grid(job: dict, photos: list[dict], *, with_kind: bool = False, per_row: int = 8) -> None:
+    """Small previews (about a third of the old size), with no caption field."""
+    columns = st.columns(per_row)
     for i, photo in enumerate(photos):
-        with columns[i % 3]:
+        with columns[i % per_row]:
             content = svc.photo_bytes(job, photo)
             if content:
                 st.image(content, width="stretch")
-            caption_key = f"caption_{photo['id']}"
-            st.text_input(
-                "Caption", photo.get("caption", ""), key=caption_key,
-                on_change=_update_photo, args=(job["id"], photo["id"], "caption", caption_key),
-            )
             if with_kind:
                 kind_key = f"kind_{photo['id']}"
                 kinds = list(svc.PHOTO_KINDS)
                 st.selectbox(
                     "Photo type", kinds, index=kinds.index(photo.get("kind", "inspection")),
-                    format_func=svc.PHOTO_KINDS.get, key=kind_key,
+                    format_func=SHORT_KINDS.get, key=kind_key, label_visibility="collapsed",
                     on_change=_update_photo, args=(job["id"], photo["id"], "kind", kind_key),
                 )
-            if st.button("Delete", key=f"del_{photo['id']}", icon=":material/delete:"):
+            if st.button("Delete", key=f"del_{photo['id']}", icon=":material/delete:", width="stretch"):
                 svc.delete_photo(job, photo["id"])
                 st.rerun()
 
@@ -585,7 +616,7 @@ def render_drive_photos(job: dict) -> None:
             st.caption(
                 f"Linked to [this Drive folder]({svc.folder_link(folder_id)}). New photos are imported "
                 f"automatically every {svc.GMAIL_POLL_SECONDS // 60} minute(s). Subfolders decide placement: "
-                "Property, Outdoor, RH, and one folder per area (with optional Sampling and Thermal inside). "
+                "Property, Outdoor, RH, and one folder per area (with optional Sampling, Moisture and Thermal inside). "
                 "Loose photos land in Unsorted below for you to place."
             )
             c1, c2 = st.columns([1, 1])
@@ -635,28 +666,30 @@ def render_unsorted_photos(job: dict, photos: list[dict]) -> None:
             "These were loose in the Drive folder, so MTAR doesn't know where they go. "
             "Pick a section for each one. Unsorted photos are left out of the report."
         )
-        columns = st.columns(3)
+        columns = st.columns(6)
         for i, photo in enumerate(photos):
-            with columns[i % 3]:
+            with columns[i % 6]:
                 content = svc.photo_bytes(job, photo)
                 if content:
                     st.image(content, width="stretch")
                 if photo.get("drive_path"):
                     st.caption(f"From {photo['drive_path']}/")
                 choice = st.selectbox("Goes in", list(targets), format_func=targets.get, key=f"assign_{photo['id']}")
-                b1, b2 = st.columns(2)
-                if b1.button("Move", key=f"move_{photo['id']}", type="primary", width="stretch"):
+                if st.button("Move", key=f"move_{photo['id']}", type="primary", width="stretch"):
                     role, _, area_id = choice.partition(":")
                     run_action(svc.assign_photo, job, photo["id"], role, area_id or None)
                     st.rerun()
-                if b2.button("Delete", key=f"del_{photo['id']}", icon=":material/delete:", width="stretch"):
+                if st.button("Delete", key=f"del_{photo['id']}", icon=":material/delete:", width="stretch"):
                     svc.delete_photo(job, photo["id"])
                     st.rerun()
 
 
 def render_photos(job: dict) -> None:
     photos = job.get("photos", [])
-    st.caption("Photos are placed in the report by role. Area photos appear under their area in upload order.")
+    st.caption(
+        "Photos are placed in the report by role. Area photos print under their area: sampling photos under the "
+        "sample, moisture photos under Moisture Assessment, then thermal."
+    )
     render_drive_photos(job)
     render_unsorted_photos(job, [p for p in photos if p.get("role") == "unsorted"])
 
@@ -669,11 +702,11 @@ def render_photos(job: dict) -> None:
     c1, c2 = st.columns(2)
     with c1, st.container(border=True):
         st.markdown("**Outdoor control sampling**")
-        _photo_grid(job, [p for p in photos if p.get("role") == "outdoor"])
+        _photo_grid(job, [p for p in photos if p.get("role") == "outdoor"], per_row=4)
         _photo_upload_form(job, f"up_outdoor_{job['id']}", "Outdoor control photos", "outdoor", kind="sampling")
     with c2, st.container(border=True):
         st.markdown("**Environmental / RH meter**")
-        _photo_grid(job, [p for p in photos if p.get("role") == "environment"])
+        _photo_grid(job, [p for p in photos if p.get("role") == "environment"], per_row=4)
         _photo_upload_form(job, f"up_env_{job['id']}", "RH meter photo", "environment", multiple=False, kind="environment")
 
     st.markdown("#### Inspection area photos")
@@ -809,13 +842,13 @@ def render_report(job: dict) -> None:
         run_action(svc.generate_final_docx, job, success="Final DOCX generated.")
         st.rerun()
     if g[3].button("Final PDF", key=f"gen_fpdf_{job['id']}", disabled=bool(issues), type="primary", width="stretch"):
-        with st.spinner("Rendering final PDF with the PRO-LAB certificate…"):
-            run_action(svc.generate_final_pdf, job, success="Final customer PDF generated with the PRO-LAB certificate attached.")
+        with st.spinner("Rendering final PDF…"):
+            run_action(svc.generate_final_pdf, job, success="Final customer PDF generated.")
         st.rerun()
 
     st.markdown("#### Latest files")
     latest = [
-        ("latest_final_pdf_filename", "Final PDF (with PRO-LAB certificate)"),
+        ("latest_final_pdf_filename", "Final PDF"),
         ("latest_final_filename", "Final DOCX"),
         ("latest_pdf_draft_filename", "Draft PDF"),
         ("latest_draft_filename", "Draft DOCX"),
@@ -858,10 +891,13 @@ def render_assessment(job_id: str) -> None:
     st.title(job.get("client_name") or "New Assessment")
     address = ", ".join(p for p in [job.get("address"), job.get("city"), " ".join(filter(None, [job.get("state"), job.get("zip")]))] if p)
     st.caption(address or "Property address pending")
-    show_flash()
-
-    if job.get("automatic_draft_error"):
-        st.warning(f"The automatic draft could not be generated: {job['automatic_draft_error']}")
+    # Messages go in one fixed container so the tabs below keep their place on
+    # the page. When a message pushed the tabs down, Streamlit left the old tab
+    # bar on screen and every Save added another copy of the form.
+    with st.container():
+        show_flash()
+        if job.get("automatic_draft_error"):
+            st.warning(f"The automatic draft could not be generated: {job['automatic_draft_error']}")
 
     status = job.get("status", "draft")
     allowed = [status] + sorted(ALLOWED_TRANSITIONS.get(status, set()))

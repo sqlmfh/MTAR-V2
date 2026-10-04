@@ -196,9 +196,9 @@ def validate_coc_payload(payload: dict) -> list[str]:
     if len(samples) > 10:
         issues.append("PRO-LAB COC supports a maximum of 10 samples")
 
+    # Serial numbers are optional: the Samples tab tracks the lab's COC / line
+    # number instead, and a serial is printed only when one is known.
     for index, sample in enumerate(samples[:10], 1):
-        if not _clean(sample.get("serial_number")):
-            issues.append(f"Sample {index}: serial number")
         if not _clean(sample.get("collection_location")):
             issues.append(f"Sample {index}: collection location")
         code = _clean(sample.get("sample_type_code")).upper()

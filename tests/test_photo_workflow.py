@@ -74,13 +74,14 @@ class PhotoWorkflowTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(
-            len(with_photos.inline_shapes) - len(without_photos.inline_shapes),
-            2,
-        )
+        added = list(with_photos.inline_shapes)[len(without_photos.inline_shapes):]
+        self.assertEqual(len(added), 2)
+        for shape in added:
+            self.assertAlmostEqual(shape.width.inches, 1.96, places=2)
+            self.assertAlmostEqual(shape.height.inches, 1.96, places=2)
+        # Captions are no longer printed under report photos.
         text = "\n".join(p.text for p in with_photos.paragraphs)
-        self.assertIn("North wall", text)
-        self.assertIn("Baseboard", text)
+        self.assertNotIn("North wall", text)
 
 
 if __name__ == "__main__":

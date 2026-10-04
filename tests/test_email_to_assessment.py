@@ -176,14 +176,96 @@ class EmailToAssessmentRegressionTests(unittest.TestCase):
         doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
         try:
             self.assertEqual(len(doc), 12)
-            self.assertIn("COAT CLOSET", doc[4].get_text("text").upper())
-            self.assertIn("Thermal Imaging", doc[6].get_text("text"))
+            letter = doc[2].get_text("text")
+            self.assertIn("Coat Closet", letter)
+            self.assertNotIn("Bedroom Closet", letter)  # not elevated, so not listed
+
+            outdoor = doc[3].get_text("text")
+            self.assertLess(outdoor.index("Outdoor Control Sample"), outdoor.index("Visual Observations"))
+            self.assertNotIn("Moisture Readings", outdoor)
+            self.assertIn("COC / LINE #:", outdoor)
+
+            coat = doc[4].get_text("text")
+            self.assertIn("COAT CLOSET", coat.upper())
+            self.assertLess(coat.index("Swab Sample:"), coat.index("Moisture Assessment:"))
+            self.assertIn("2030805 - 3", coat)
+            self.assertIn("Thermal Imaging", doc[5].get_text("text"))
             self.assertIn("BEDROOM CLOSET", doc[7].get_text("text").upper())
             self.assertIn("LABORATORY RESULTS ANALYSIS", doc[9].get_text("text").upper())
             self.assertIn("CONCLUSIONS", doc[10].get_text("text").upper())
-            self.assertIn("TERMS AND CONDITIONS", doc[11].get_text("text").upper())
+            terms = doc[11].get_text("text")
+            self.assertIn("TERMS AND CONDITIONS", terms.upper())
+            self.assertNotIn("Laboratory Report Attached", terms)
+
+            # Every photo is a 1.96in square, three to a row.
+            coat_photos = [info["bbox"] for info in doc[4].get_image_info() if info["bbox"][0] < 540]
+            for x0, y0, x1, y1 in coat_photos:
+                self.assertAlmostEqual(x1 - x0, 1.96 * 72, delta=0.5)
+                self.assertAlmostEqual(y1 - y0, 1.96 * 72, delta=0.5)
+            first_row = [box for box in coat_photos if abs(box[1] - coat_photos[0][1]) < 1]
+            self.assertEqual(len(first_row), 3)
         finally:
             doc.close()
+
+    def test_word_report_follows_the_customer_report_layout(self):
+        from docx import Document
+        from docx.oxml.ns import qn
+
+        job = new_persistent_job()
+        build_automated_job_from_prolab(job, self.parsed, MOLD_DESCRIPTIONS.keys())
+        job["report_outcome"] = "Mold remediation required"
+        job["humidity"] = 58.0
+        areas = {area["name"]: area for area in job["areas"]}
+        for area in areas.values():
+            area["moisture_notes"] = "No surfaces were wet in this area. Highest moisture content observed was 14%."
+
+        def photo(kind):
+            buffer = BytesIO()
+            Image.new("RGB", (480, 640), "white").save(buffer, format="JPEG")
+            buffer.seek(0)
+            return {"content": buffer, "kind": kind}
+
+        coat = areas["Coat Closet"]["id"]
+        photos = {
+            "outdoor": [photo("sampling") for _ in range(3)],
+            "environment": [photo("environment")],
+            coat: [photo("inspection") for _ in range(4)] + [photo("sampling") for _ in range(2)],
+        }
+        doc = Document(BytesIO(create_report(job, photos, None).getvalue()))
+        texts = [p.text for p in doc.paragraphs]
+        full = "\n".join(texts)
+
+        self.assertNotIn("assigned to", full)
+        self.assertNotIn("Laboratory Report Attached", full)
+        self.assertNotIn("Moisture Readings", full)
+        # The letter lists only areas where mold was found.
+        bullets = [p.text for p in doc.paragraphs if p.style.name == "List Bullet" and "—" in p.text]
+        self.assertEqual(bullets, ["Coat Closet — Active mold growth confirmed"])
+
+        def at(text, start=0):
+            return next(i for i, t in enumerate(texts) if i >= start and t.startswith(text))
+
+        outdoor = at("Outdoor Control Sample")
+        self.assertLess(outdoor, at("Visual Observations"))
+        self.assertEqual(texts[at("COC / LINE #:", outdoor)], "COC / LINE #: 2030805 - 1")
+
+        # Coat Closet: bold "Swab Sample:", the sample's COC line and sampling
+        # photos, then Moisture Assessment with the moisture photos.
+        title = texts.index("Coat Closet")
+        swab = at("Swab Sample:", title)
+        self.assertTrue(doc.paragraphs[swab].runs[0].bold)
+        self.assertEqual(texts[at("COC / LINE #:", title)], "COC / LINE #: 2030805 - 3")
+        moisture = at("Moisture Assessment:", title)
+
+        def photo_count(start, end):
+            return sum(len(p._p.findall(".//" + qn("wp:inline"))) for p in doc.paragraphs[start:end])
+
+        self.assertEqual(photo_count(swab, moisture), 2)
+        self.assertEqual(photo_count(moisture, texts.index("Bedroom Closet")), 4)
+        self.assertEqual(photo_count(outdoor, at("Visual Observations")), 3)
+        for shape in doc.inline_shapes:
+            if abs(shape.width.inches - 1.96) < 0.01:
+                self.assertAlmostEqual(shape.height.inches, 1.96, places=2)
 
     def test_lab_only_assessment_can_generate_review_draft(self):
         job = new_persistent_job()

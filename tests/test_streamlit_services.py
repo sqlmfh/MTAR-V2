@@ -81,15 +81,6 @@ class LabInboxTests(unittest.TestCase):
             self.assertEqual(store.list(), [])
 
 
-class FinalPackageTests(unittest.TestCase):
-    def test_lab_certificate_is_appended_unchanged(self):
-        package = mtar_services.append_lab_certificate(_pdf(3), _pdf(2))
-        with fitz.open(stream=package, filetype="pdf") as doc:
-            self.assertEqual(doc.page_count, 5)
-            self.assertIn("page 1", doc[3].get_text())
-            self.assertIn("page 2", doc[4].get_text())
-
-
 class BundledCocTemplateTests(unittest.TestCase):
     def test_scarlet_samples_fill_the_bundled_coc(self):
         from coc_builder import build_coc_payload, fill_coc_pdf
