@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from io import BytesIO
 from pathlib import Path
 import tempfile
@@ -9,7 +11,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from document_store import FileDocumentStore
-from drive_photos import FOLDER_MIME, find_job_folder, folder_id_from_link
+from drive_photos import FOLDER_MIME, find_job_folder, folder_id_from_link, match_job_folders
 from job_store import SQLiteJobStore
 import mtar_services
 from models import new_area
@@ -75,6 +77,47 @@ class DrivePhotoTests(unittest.TestCase):
         self.assertIsNone(find_job_folder({"client_name": "Nobody"}, root))
         duplicate = root + [_folder("dup", "Scarlet Harper (old)")]
         self.assertIsNone(find_job_folder({"client_name": "Scarlet Harper"}, duplicate))
+
+    def test_loosely_named_job_folders_are_matched(self):
+        root = [
+            _folder("f1", "5302 Scarlet"), _folder("f2", "6108 William"), _folder("f3", "John Smith"),
+            _folder("f4", "Maria"), _folder("f5", "Linda Mold Test"), _folder("f6", "2034001"),
+        ]
+        jobs = [
+            {"id": "scarlet", "client_name": "Scarlet Harper", "address": "16371 County Road 245"},
+            {"id": "william", "client_name": "William Villalobos", "address": "6108 Cherry Glow Lane"},
+            {"id": "john", "client_name": "John Doe", "address": "1 Elm St"},  # "John Smith" is someone else
+            {"id": "maria1", "client_name": "Maria Lopez", "address": "411 Oak Bend Dr"},
+            {"id": "maria2", "client_name": "Maria Garcia", "address": "9 Pine St"},  # two Marias: no guess
+            {"id": "linda", "client_name": "Linda Nguyen", "address": "77 Willow Way"},
+            {"id": "lab", "client_name": "", "address": "", "lab_metadata": {"report_number": "2034001"}},
+        ]
+        matches = {job_id: folder["id"] for job_id, folder in match_job_folders(jobs, root).items()}
+        self.assertEqual(matches, {"scarlet": "f1", "william": "f2", "linda": "f5", "lab": "f6"})
+        # A folder another assessment already uses is never taken.
+        self.assertNotIn("scarlet", match_job_folders(jobs, root, taken={"f1"}))
+        # Two folders that fit equally well: pick by hand.
+        self.assertNotIn("scarlet", match_job_folders(jobs, root + [_folder("f7", "Harper retest")]))
+
+    def test_new_assessment_from_a_lab_report_links_its_folder(self):
+        parsed = json.loads((Path(__file__).parent / "fixtures" / "scarlet_parsed_expected.json").read_text())
+        drive = FakeDrive()
+        drive.tree = {**FakeDrive.tree, "root": [_folder("job", "5302 Scarlet"), _folder("other", "John Smith")]}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteJobStore(Path(tmp) / "db.sqlite3")
+            documents = FileDocumentStore(Path(tmp) / "docs")
+            with (
+                patch.object(mtar_services, "store", store),
+                patch.object(mtar_services, "documents", documents),
+                patch.object(mtar_services, "drive_client", drive),
+                patch.object(mtar_services, "DRIVE_PHOTOS_FOLDER", "root"),
+                patch.object(mtar_services, "parse_prolab_pdf", return_value=parsed),
+                patch.object(mtar_services, "_generate_auto_drafts"),
+            ):
+                store.record_inbox_item("msg", "waiting", filename="Lab.pdf", report_number="2030805")
+                documents.save_bytes("inbox_msg", "lab", "Lab.pdf", b"%PDF-1.7")
+                job = mtar_services.create_job_from_inbox_item("msg")
+                self.assertEqual((job["drive_folder_id"], job["drive_folder_name"]), ("job", "5302 Scarlet"))
 
     def test_sync_places_photos_by_subfolder_and_skips_repeats(self):
         with tempfile.TemporaryDirectory() as tmp:

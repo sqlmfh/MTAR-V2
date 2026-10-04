@@ -4,7 +4,9 @@ Inspectors upload photos from their phone into one Google Drive folder per
 assessment. MTAR reads that folder and places each photo by its subfolder:
 
     MTAR Photos/                      <- DRIVE_PHOTOS_FOLDER (optional root)
-        Scarlet Harper - 16371 County Road 245/   <- one folder per assessment
+        5302 Scarlet/                 <- one folder per assessment, named with the
+                                         customer's first or last name, house number
+                                         or lab report number
             Property/                 -> cover photo
             Outdoor/                  -> outdoor control sampling photos
             RH/                       -> environmental / RH meter photo
@@ -133,18 +135,86 @@ class DriveClient:
         return self._get_service().files().get_media(fileId=file_id, supportsAllDrives=True).execute()
 
 
-def find_job_folder(job: dict, root_children: list[dict]) -> dict | None:
-    """Find the assessment's folder inside the root by client name or street address."""
+# Words inspectors add to job folder names that say nothing about the customer.
+FOLDER_FILLER_WORDS = {
+    "MOLD", "TEST", "TESTING", "JOB", "JOBS", "ASSESSMENT", "INSPECTION", "PHOTOS", "PICS", "PICTURES",
+    "HOUSE", "HOME", "RESIDENCE", "PROPERTY", "REPORT", "FAMILY", "THE", "AND", "MR", "MRS", "MS", "NEW",
+    "RETEST", "CLEARANCE", "POST", "REMEDIATION",
+}
+
+
+def folder_match_score(job: dict, folder_name: str) -> int:
+    """How strongly a job folder's name points at this assessment.
+
+    Inspectors name folders loosely ("5302 Scarlet", "Harper - County Rd 245"),
+    so the full name, first or last name, house number, street name and lab
+    report number each count. A score of 2 or more is a candidate.
+    """
+    words = set(_key(folder_name).split())
+    name = f" {_key(folder_name)} "
+    score = 0
     client = _key(job.get("client_name"))
-    address = _key(job.get("address"))
+    parts = [part for part in client.split() if len(part) >= 3]
+    address = _key(job.get("address")).split()
+    if client and f" {client} " in name:
+        score += 4
+    elif parts:
+        # A lone first or last name is enough ("5302 Scarlet"), unless the
+        # folder also names someone else ("John Smith" for John Doe).
+        known = set(client.split()) | set(address) | set(_key(job.get("city")).split()) | FOLDER_FILLER_WORDS
+        strangers = [word for word in words if word.isalpha() and word not in known]
+        named = sum(1 for part in {parts[0], parts[-1]} if part in words)
+        score += named * (1 if strangers else 2)
+    if address and address[0].isdigit() and address[0] in words:
+        score += 2
+    if len(address) >= 2 and not address[1].isdigit() and len(address[1]) >= 3 and address[1] in words:
+        score += 1
+    metadata = job.get("lab_metadata") or {}
+    report_number = _key(metadata.get("report_number"))
+    if report_number and report_number in words:
+        score += 3
+    return score
+
+
+def match_job_folders(jobs: list[dict], root_children: list[dict], taken: set[str] = frozenset()) -> dict[str, dict]:
+    """Pair assessments with job folders when each is the other's one clear best.
+
+    A folder is linked only when it fits one assessment better than any other,
+    and that assessment fits it better than any other folder. Folders already
+    linked to an assessment (``taken``) are left alone.
+    """
+    folders = [item for item in root_children if item.get("mimeType") == FOLDER_MIME and item.get("id") not in taken]
+    scores = {
+        (job.get("id", ""), folder["id"]): score
+        for job in jobs
+        for folder in folders
+        if (score := folder_match_score(job, folder.get("name", ""))) >= 2
+    }
+
+    def clear_best(candidates: list[tuple[str, int]]) -> str | None:
+        ranked = sorted(candidates, key=lambda item: item[1], reverse=True)
+        if not ranked or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
+            return None
+        return ranked[0][0]
+
+    matches = {}
+    for job in jobs:
+        job_id = job.get("id", "")
+        folder_id = clear_best([(f, score) for (j, f), score in scores.items() if j == job_id])
+        if folder_id and clear_best([(j, score) for (j, f), score in scores.items() if f == folder_id]) == job_id:
+            matches[job_id] = next(folder for folder in folders if folder["id"] == folder_id)
+    return matches
+
+
+def find_job_folder(job: dict, root_children: list[dict], other_jobs: list[dict] = ()) -> dict | None:
+    """Find one assessment's folder, taking the other open assessments into account."""
+    return match_job_folders([job, *other_jobs], root_children).get(job.get("id", ""))
+
+
+def suggested_folders(job: dict, root_children: list[dict]) -> list[dict]:
+    """Every job folder, the most likely ones for this assessment first."""
     folders = [item for item in root_children if item.get("mimeType") == FOLDER_MIME]
-    matches = [
-        folder for folder in folders
-        if (client and client in _key(folder.get("name")))
-        or (address and address in _key(folder.get("name")))
-    ]
-    # Only link automatically when exactly one folder matches.
-    return matches[0] if len(matches) == 1 else None
+    return sorted(folders, key=lambda f: (-folder_match_score(job, f.get("name", "")), _key(f.get("name"))))
 
 
 @dataclass

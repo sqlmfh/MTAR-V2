@@ -123,7 +123,7 @@ Inspectors upload photos from their phone into one Drive folder per assessment. 
 
 ```text
 MTAR Photos/                                  <- optional root (DRIVE_PHOTOS_FOLDER)
-    Scarlet Harper - 16371 County Road 245/   <- one folder per assessment
+    5302 Scarlet/                             <- one folder per assessment
         Property/        cover photo (one is kept)
         Outdoor/         outdoor control sampling photos
         RH/              RH meter photo
@@ -132,7 +132,8 @@ MTAR Photos/                                  <- optional root (DRIVE_PHOTOS_FOL
             Thermal/     thermal images for that area
 ```
 
-- Link a folder by pasting its link on the Photos tab. When `DRIVE_PHOTOS_FOLDER` is set, an assessment links itself to the one folder whose name contains its client name or street address.
+- When `DRIVE_PHOTOS_FOLDER` is set to the Jobs folder, each open assessment links itself to its folder in the background and right after it is created from a PRO-LAB report. Folder names can be loose: the customer's full, first or last name, the house number, the street name or the lab report number count ("5302 Scarlet", "6108 William"). MTAR links only when one folder clearly fits one assessment; a folder that also names someone else ("John Smith" for John Doe) or two folders that fit equally well are left alone.
+- Otherwise pick the folder from the list on the Photos tab (likeliest first, folders used by other assessments left out), or paste a folder link.
 - A folder that matches no existing area creates that area. Images loose in the job folder, or in a folder MTAR does not recognise, are imported to **Unsorted** on the Photos tab, where the user picks their section; they stay out of the report until filed.
 - New photos are imported on the same timer as Gmail and with **Import from Drive now**. Each Drive file is imported once, so a photo deleted in MTAR is not brought back.
 - iPhone HEIC photos are converted to JPEG.

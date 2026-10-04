@@ -19,7 +19,15 @@ from uuid import uuid4
 
 from coc_builder import build_coc_payload, fill_coc_pdf, validate_coc_payload
 from document_store import FileDocumentStore
-from drive_photos import DriveClient, find_job_folder, folder_id_from_link, folder_link, sync_job_photos
+from drive_photos import (
+    DriveClient,
+    folder_id_from_link,
+    folder_link,
+    folder_match_score,
+    match_job_folders,
+    suggested_folders,
+    sync_job_photos,
+)
 from gmail_intake import (
     GmailApiClient,
     confident_job_match,
@@ -616,7 +624,7 @@ def create_job_from_inbox_item(message_id: str) -> dict:
             } if from_gmail else None,
         )
     store.resolve_inbox_item(message_id, "created", job_id=saved["id"])
-    return saved
+    return try_auto_link_drive_folder(saved)
 
 
 # ---------------------------------------------------------------------------
@@ -1151,31 +1159,78 @@ def link_drive_folder(job: dict, link: str) -> dict:
     if not folder_id:
         raise ValueError("Paste a Google Drive folder link (it contains /folders/).")
     job["drive_folder_id"] = folder_id
+    job.pop("drive_folder_name", None)
+    return store.save(job)
+
+
+def use_drive_folder(job: dict, folder: dict) -> dict:
+    """Link a folder picked from the Jobs folder list."""
+    job["drive_folder_id"] = folder["id"]
+    job["drive_folder_name"] = folder.get("name", "")
     return store.save(job)
 
 
 def unlink_drive_folder(job: dict) -> dict:
     job.pop("drive_folder_id", None)
+    job.pop("drive_folder_name", None)
     return store.save(job)
 
 
-def _auto_link_drive_folder(job: dict, root_children: list[dict] | None) -> dict:
-    if job.get("drive_folder_id") or not root_children:
-        return job
-    folder = find_job_folder(job, root_children)
-    if folder:
-        job["drive_folder_id"] = folder["id"]
-        job = store.save(job)
-    return job
+_DRIVE_ROOT_CACHE: dict = {"at": 0.0, "items": []}
+
+
+def drive_job_folders(max_age: float = 60) -> list[dict]:
+    """The folders inside the Drive Jobs folder (re-read at most once a minute)."""
+    if not (DRIVE_PHOTOS_FOLDER and drive_client.configured()):
+        return []
+    if time.monotonic() - _DRIVE_ROOT_CACHE["at"] > max_age:
+        _DRIVE_ROOT_CACHE["items"] = drive_client.list_children(DRIVE_PHOTOS_FOLDER)
+        _DRIVE_ROOT_CACHE["at"] = time.monotonic()
+    return list(_DRIVE_ROOT_CACHE["items"])
+
+
+def drive_folder_choices(job: dict) -> list[dict]:
+    """Job folders for the picker, the likeliest first, without folders other assessments use."""
+    taken = {other.get("drive_folder_id") for other in _all_jobs() if other.get("id") != job.get("id")}
+    return [folder for folder in suggested_folders(job, drive_job_folders()) if folder["id"] not in taken]
+
+
+def auto_link_drive_folders(root_children: list[dict] | None = None) -> list[dict]:
+    """Link every open assessment that has one clear job folder in Drive."""
+    if root_children is None:
+        root_children = drive_job_folders(max_age=0)
+    if not root_children:
+        return []
+    jobs = _all_jobs()
+    taken = {job["drive_folder_id"] for job in jobs if job.get("drive_folder_id")}
+    open_jobs = [job for job in jobs if job.get("status") in DRIVE_SYNC_STATUSES and not job.get("drive_folder_id")]
+    linked = []
+    for job_id, folder in match_job_folders(open_jobs, root_children, taken).items():
+        job = store.get(job_id)
+        if job and not job.get("drive_folder_id"):
+            job["drive_folder_id"] = folder["id"]
+            job["drive_folder_name"] = folder.get("name", "")
+            linked.append(store.save(job))
+    return linked
+
+
+def try_auto_link_drive_folder(job: dict) -> dict:
+    """Link a just-created assessment right away when its folder is clear."""
+    try:
+        with INTAKE_LOCK:
+            auto_link_drive_folders()
+    except Exception:
+        return job  # the background check tries again
+    return store.get(job["id"]) or job
 
 
 def sync_drive_photos(job: dict, *, root_children: list[dict] | None = None) -> tuple[dict, dict]:
     """Import new photos from this assessment's Drive folder."""
     if not drive_client.configured():
         raise ValueError("Google Drive is not connected. Add the Drive scope to the Google sign-in first.")
-    if root_children is None and DRIVE_PHOTOS_FOLDER and not job.get("drive_folder_id"):
-        root_children = drive_client.list_children(DRIVE_PHOTOS_FOLDER)
-    job = _auto_link_drive_folder(job, root_children)
+    if not job.get("drive_folder_id"):
+        auto_link_drive_folders(root_children)
+        job = store.get(job["id"]) or job
     if not job.get("drive_folder_id"):
         raise ValueError("No Drive folder is linked to this assessment yet.")
 
@@ -1194,7 +1249,10 @@ def sync_drive_photos(job: dict, *, root_children: list[dict] | None = None) -> 
 
 def sync_all_drive_photos() -> int:
     """Background pass: pull new Drive photos for every open assessment."""
-    root_children = drive_client.list_children(DRIVE_PHOTOS_FOLDER) if DRIVE_PHOTOS_FOLDER else None
+    root_children = drive_job_folders(max_age=0) if DRIVE_PHOTOS_FOLDER else None
+    if root_children:
+        with INTAKE_LOCK:
+            auto_link_drive_folders(root_children)
     imported = 0
     for summary in store.list(statuses=sorted(DRIVE_SYNC_STATUSES), limit=500):
         # The lock keeps a delete from the dashboard from running mid-sync,
@@ -1203,7 +1261,6 @@ def sync_all_drive_photos() -> int:
             job = store.get(summary.id)
             if not job or job.get("status") not in DRIVE_SYNC_STATUSES:
                 continue
-            job = _auto_link_drive_folder(job, root_children)
             if not job.get("drive_folder_id"):
                 continue
             try:

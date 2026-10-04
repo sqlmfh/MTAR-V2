@@ -957,8 +957,9 @@ def render_drive_photos(job: dict) -> None:
 
         folder_id = job.get("drive_folder_id")
         if folder_id:
+            folder_name = job.get("drive_folder_name")
             st.caption(
-                f"Linked to [this Drive folder]({svc.folder_link(folder_id)}). New photos are imported "
+                f"Linked to [{folder_name or 'this Drive folder'}]({svc.folder_link(folder_id)}). New photos are imported "
                 f"automatically every {svc.GMAIL_POLL_SECONDS // 60} minute(s). Subfolders decide placement: "
                 "Property, Outdoor, RH, and one folder per area (with optional Sampling, Moisture and Thermal inside). "
                 "Loose photos land in Unsorted below for you to place."
@@ -975,16 +976,43 @@ def render_drive_photos(job: dict) -> None:
                 flash("success", "Drive folder unlinked. Photos already imported stay on this assessment.")
                 st.rerun()
         else:
-            st.caption(
-                "Paste the link to this assessment's Drive folder"
-                + (", or name a folder in the MTAR Photos folder after the client or address and it links itself." if svc.DRIVE_PHOTOS_FOLDER else ".")
-            )
-            with st.form(f"drive_link_{job['id']}", clear_on_submit=True):
-                link = st.text_input("Drive folder link")
-                if st.form_submit_button("Link folder") and link:
-                    if run_action(svc.link_drive_folder, job, link, success="Drive folder linked."):
-                        run_action(svc.sync_drive_photos, svc.store.get(job["id"]))
-                    st.rerun()
+            folders, error = [], ""
+            if svc.DRIVE_PHOTOS_FOLDER:
+                try:
+                    folders = svc.drive_folder_choices(job)
+                except Exception as exc:  # Drive unreachable: the paste box below still works
+                    error = str(exc)
+            if folders:
+                st.caption(
+                    "MTAR links the job folder by itself when only one folder in your Jobs folder fits this "
+                    "assessment by customer name, house number or lab report # (for example \"5302 Scarlet\"). "
+                    "Otherwise pick it here; the likeliest folders are at the top."
+                )
+                best = folders[0] if svc.folder_match_score(job, folders[0].get("name", "")) >= 2 else None
+                with st.form(f"drive_pick_{job['id']}", border=False):
+                    choice = st.selectbox(
+                        "Job folder in Drive", folders, format_func=lambda f: f.get("name", ""),
+                        index=0 if best else None, placeholder="Pick this assessment's folder",
+                    )
+                    if st.form_submit_button("Link folder and import photos", type="primary") and choice:
+                        if run_action(svc.use_drive_folder, job, choice, success=f"Linked {choice.get('name', 'the folder')}."):
+                            with st.spinner("Downloading photos from Drive…"):
+                                run_action(svc.sync_drive_photos, svc.store.get(job["id"]))
+                        st.rerun()
+            elif error:
+                st.caption(f":orange[Could not read the Jobs folder in Drive: {error}]")
+            elif not svc.DRIVE_PHOTOS_FOLDER:
+                st.caption(
+                    "Set DRIVE_PHOTOS_FOLDER to the link of your Jobs folder in the host's settings, and MTAR "
+                    "finds each assessment's folder by itself."
+                )
+            with st.expander("Or paste a folder link"):
+                with st.form(f"drive_link_{job['id']}", clear_on_submit=True, border=False):
+                    link = st.text_input("Drive folder link")
+                    if st.form_submit_button("Link folder") and link:
+                        if run_action(svc.link_drive_folder, job, link, success="Drive folder linked."):
+                            run_action(svc.sync_drive_photos, svc.store.get(job["id"]))
+                        st.rerun()
 
         last = job.get("drive_last_sync")
         if last:
@@ -1258,7 +1286,7 @@ def render_assessment(job_id: str) -> None:
 
     status = job.get("status", "draft")
     allowed = [status] + sorted(ALLOWED_TRANSITIONS.get(status, set()))
-    s1, s2, s3 = st.columns([2, 4, 1], vertical_alignment="bottom")
+    s1, s2, s3 = st.columns([2, 3.4, 1.6], vertical_alignment="bottom")
     new_status = s1.selectbox("Workflow status", allowed, format_func=svc.status_label, key=f"status_{job_id}_{status}")
     if new_status != status:
         try:
