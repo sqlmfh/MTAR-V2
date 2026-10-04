@@ -322,8 +322,7 @@ def create_report(job: dict, photos: dict, lab_pdf_bytes: bytes | None = None) -
         try:
             p = make_tight(doc.add_paragraph())
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cover = square_photo(cover_entry.get("content"), pixels=1200) or cover_entry.get("content")
-            p.add_run().add_picture(cover, width=Inches(5))
+            p.add_run().add_picture(cover_entry.get("content"), width=Inches(5))
         except Exception:
             pass
 
