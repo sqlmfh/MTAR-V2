@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import fitz
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import mtar_services as svc
 from workflow import ALLOWED_TRANSITIONS
@@ -1309,25 +1310,59 @@ def render_assessment(job_id: str) -> None:
 
     # The key keeps the open tab across reruns; without it, any message shown
     # above the tabs after a button click sent the user back to Overview.
-    tabs = st.tabs(
-        ["Overview", "Inspection Areas", "Samples", "Photos", "Lab Results", "Report", "Documents"],
-        key=f"tabs_{job_id}",
-        on_change="rerun",
+    tab_key = f"tabs_{job_id}"
+    sections = [
+        ("Overview", render_overview),
+        ("Inspection Areas", render_areas),
+        ("Samples", render_samples),
+        ("Photos", render_photos),
+        ("Lab Results", render_lab),
+        ("Report", render_report),
+        ("Documents", render_documents),
+    ]
+    tabs = st.tabs([label for label, _ in sections], key=tab_key, on_change="rerun")
+    for index, (tab, (_, render)) in enumerate(zip(tabs, sections)):
+        with tab:
+            render(job)
+            if index + 1 < len(sections):
+                _next_tab_button(tab_key, sections[index + 1][0])
+    _scroll_to_top_if_asked()
+
+
+def _go_to_tab(tab_key: str, label: str) -> None:
+    st.session_state[tab_key] = label
+    st.session_state["scroll_to_top"] = st.session_state.get("scroll_to_top", 0) + 1
+
+
+def _next_tab_button(tab_key: str, label: str) -> None:
+    """A Next button at the end of each tab, so nobody has to scroll back up."""
+    st.divider()
+    _, right = st.columns([3, 1])
+    right.button(
+        f"Next: {label}", key=f"next_{tab_key}_{label}", on_click=_go_to_tab, args=(tab_key, label),
+        icon=":material/arrow_forward:", icon_position="right", width="stretch",
     )
-    with tabs[0]:
-        render_overview(job)
-    with tabs[1]:
-        render_areas(job)
-    with tabs[2]:
-        render_samples(job)
-    with tabs[3]:
-        render_photos(job)
-    with tabs[4]:
-        render_lab(job)
-    with tabs[5]:
-        render_report(job)
-    with tabs[6]:
-        render_documents(job)
+
+
+def _scroll_to_top_if_asked() -> None:
+    """After Next, show the new tab from its top instead of where the last one ended."""
+    count = st.session_state.get("scroll_to_top", 0)
+    if count == st.session_state.get("scrolled_to_top", 0):
+        return
+    st.session_state["scrolled_to_top"] = count
+    # A new count makes a new frame, so the browser runs the script every time.
+    components.html(
+        f"""<script>/* {count} */
+        const page = window.parent;
+        const toTop = () => {{
+            page.scrollTo(0, 0);
+            page.document.querySelectorAll('[data-testid="stMain"], [data-testid="stAppViewContainer"]')
+                .forEach((el) => el.scrollTo(0, 0));
+        }};
+        toTop(); [100, 300, 600, 1000].forEach((ms) => setTimeout(toTop, ms));
+        </script>""",
+        height=0,
+    )
 
 
 render_sidebar()
