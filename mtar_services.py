@@ -69,6 +69,10 @@ DRIVE_PHOTOS_FOLDER = folder_id_from_link(os.environ.get("DRIVE_PHOTOS_FOLDER", 
 INTAKE_LOCK = threading.Lock()
 LAST_GMAIL_CHECK: dict = {"status": "not_run"}
 
+# When this copy of the code was imported. app.py compares it with the files
+# on disk to notice code that changed after an update.
+LOADED_AT = time.time()
+
 STATUS_LABELS = {
     "draft": "Draft",
     "inspection": "Inspection",
@@ -525,20 +529,74 @@ def check_gmail_now() -> dict:
     return result
 
 
+POLLER_NAME = "mtar-gmail-poller"
+_POLLER_LOCK = threading.Lock()
+_poller: threading.Thread | None = None
+_stop_poller = threading.Event()
+
+
+class _Offline:
+    """Stands in for the Gmail and Drive clients of a retired copy of this code."""
+
+    def configured(self) -> bool:
+        return False
+
+
+def _retire(thread: threading.Thread) -> None:
+    """Stop a background checker that runs an older copy of this code."""
+    stop = getattr(thread, "mtar_stop", None)
+    if stop is not None:
+        stop.set()
+        return
+    # Checkers from before the stop switch existed: switch their Gmail and
+    # Drive clients off, so their loop only sleeps.
+    module_globals = getattr(getattr(thread, "_target", None), "__globals__", None)
+    if isinstance(module_globals, dict) and module_globals is not globals():
+        module_globals["gmail_client"] = _Offline()
+        module_globals["drive_client"] = _Offline()
+
+
+def start_background_checks() -> threading.Thread | None:
+    """Run Gmail and Drive checks in one background thread per server.
+
+    Safe to call on every page load. After an update, a checker still running
+    the previous code is stopped, so only the current code imports emails.
+    """
+    global _poller
+    with _POLLER_LOCK:
+        if _poller is not None and _poller.is_alive():
+            return _poller
+        for thread in threading.enumerate():
+            if thread.name != POLLER_NAME or not thread.is_alive():
+                continue
+            if getattr(getattr(thread, "_target", None), "__globals__", None) is globals():
+                _poller = thread  # started from this same code, e.g. by start.py
+                return thread
+            _retire(thread)
+        if not (gmail_client.configured() or drive_client.configured()):
+            return None
+        _poller = threading.Thread(target=gmail_poll_loop, name=POLLER_NAME, daemon=True)
+        _poller.mtar_stop = _stop_poller
+        _poller.start()
+        return _poller
+
+
 def gmail_poll_loop() -> None:
-    """Background polling loop. Streamlit starts it once per server process."""
-    while True:
+    """Background polling loop, started by ``start_background_checks``."""
+    while not _stop_poller.is_set():
         if gmail_client.configured():
             try:
                 check_gmail_now()
             except Exception:
                 pass  # recorded in LAST_GMAIL_CHECK
+        if _stop_poller.is_set():
+            break
         if drive_client.configured():
             try:
                 sync_all_drive_photos()
             except Exception:
                 pass  # per-assessment errors are recorded on the assessment
-        time.sleep(GMAIL_POLL_SECONDS)
+        _stop_poller.wait(GMAIL_POLL_SECONDS)
 
 
 def create_from_lab_upload(pdf_bytes: bytes, filename: str) -> dict:

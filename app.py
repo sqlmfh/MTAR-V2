@@ -6,16 +6,46 @@ and passes user input to those services.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import importlib
 import os
-import threading
+import sys
 from zoneinfo import ZoneInfo
 
 import fitz
 import pandas as pd
 import streamlit as st
 
-import mtar_services as svc
-from workflow import ALLOWED_TRANSITIONS
+# MTAR's own modules. mtar_services imports the others.
+LOCAL_MODULES = (
+    "workflow", "models", "job_store", "document_store", "photo_service", "prolab_parser", "gmail_intake",
+    "drive_photos", "coc_builder", "report_builder", "pdf_report_builder", "mtar_services",
+)
+
+
+def _load_services():
+    """Import mtar_services, reloading MTAR's modules if their files changed.
+
+    After an update, Streamlit Cloud runs the new app.py but can keep the
+    previous mtar_services and friends in memory. The new page then called
+    functions the old code did not have and crashed ("module 'mtar_services'
+    has no attribute 'lab_reports'").
+    """
+    import mtar_services
+
+    folder = os.path.dirname(os.path.abspath(mtar_services.__file__))
+    paths = [os.path.join(folder, f"{name}.py") for name in LOCAL_MODULES]
+    newest = max((os.path.getmtime(path) for path in paths if os.path.exists(path)), default=0)
+    if getattr(mtar_services, "LOADED_AT", 0) >= newest:
+        return mtar_services
+    for name in LOCAL_MODULES:
+        sys.modules.pop(name, None)
+    fresh = importlib.import_module("mtar_services")
+    fresh.LOADED_AT = max(fresh.LOADED_AT, newest)  # a file dated in the future must not reload every run
+    return fresh
+
+
+svc = _load_services()
+from workflow import ALLOWED_TRANSITIONS  # noqa: E402  (after the reload above)
 
 st.set_page_config(page_title="MTAR", page_icon="🦠", layout="wide")
 
@@ -63,16 +93,8 @@ IMAGE_TYPES = ["jpg", "jpeg", "png", "webp", "heic", "heif"]
 # ---------------------------------------------------------------------------
 
 
-@st.cache_resource
-def _start_gmail_poller() -> threading.Thread | None:
-    if not (svc.gmail_client.configured() or svc.drive_client.configured()):
-        return None
-    thread = threading.Thread(target=svc.gmail_poll_loop, name="mtar-gmail-poller", daemon=True)
-    thread.start()
-    return thread
-
-
-_start_gmail_poller()
+# Also stops a checker left running by the code from before an update.
+svc.start_background_checks()
 
 
 # ---------------------------------------------------------------------------
