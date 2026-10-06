@@ -21,6 +21,7 @@ from document_store import FileDocumentStore
 from drive_photos import DriveClient, find_job_folder, folder_id_from_link, folder_link, sync_job_photos
 from gmail_intake import (
     GmailApiClient,
+    GmailRateLimited,
     confident_job_match,
     find_job_by_report_number,
     inspect_attachment,
@@ -333,7 +334,7 @@ def run_gmail_intake() -> dict:
             "skipped": 0,
         }
 
-        attachments = gmail_client.search_pdf_attachments()
+        attachments = gmail_client.search_pdf_attachments(skip_message_ids=processed_ids)
         result["checked"] = len(attachments)
 
         for attachment in attachments:
@@ -423,15 +424,30 @@ def run_gmail_intake() -> dict:
         return result
 
 
+class GmailPaused(ValueError):
+    """Gmail asked MTAR to slow down; the check is skipped until it allows again."""
+
+
+# Set when Gmail answers "rate limit exceeded"; no check runs before then.
+GMAIL_PAUSED_UNTIL: datetime | None = None
+
+
 def check_gmail_now() -> dict:
     """Run one intake pass and record the outcome for the dashboard."""
-    global LAST_GMAIL_CHECK
+    global LAST_GMAIL_CHECK, GMAIL_PAUSED_UNTIL
     checked_at = datetime.now(timezone.utc)
+    if GMAIL_PAUSED_UNTIL and checked_at < GMAIL_PAUSED_UNTIL:
+        raise GmailPaused("Gmail asked MTAR to slow down for a few minutes. It checks again by itself after that.")
     try:
         result = run_gmail_intake()
+    except GmailRateLimited as exc:
+        GMAIL_PAUSED_UNTIL = exc.retry_at
+        LAST_GMAIL_CHECK = {"status": "paused", "until": exc.retry_at, "at": checked_at}
+        raise GmailPaused("Gmail asked MTAR to slow down for a few minutes. It checks again by itself after that.") from exc
     except Exception as exc:
         LAST_GMAIL_CHECK = {"status": "error", "error": str(exc), "at": checked_at}
         raise
+    GMAIL_PAUSED_UNTIL = None
     if result.get("configured"):
         LAST_GMAIL_CHECK = {
             "status": "ok",

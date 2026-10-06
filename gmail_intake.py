@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import base64
 import os
+import re
+import time
 from typing import Iterable
 
 from prolab_parser import parse_prolab_pdf
@@ -12,6 +15,37 @@ DEFAULT_GMAIL_QUERY = (
     'has:attachment filename:pdf newer_than:30d '
     '-in:trash -in:spam'
 )
+
+
+# Pause between Gmail API calls. Gmail allows 250 quota units per second per
+# user and each call costs 5, so back-to-back downloads hit the limit.
+GMAIL_CALL_PAUSE_SECONDS = 0.25
+
+
+class GmailRateLimited(RuntimeError):
+    """Gmail asked MTAR to stop calling it until ``retry_at``."""
+
+    def __init__(self, retry_at: datetime) -> None:
+        super().__init__(f"Gmail asked MTAR to wait until {retry_at.isoformat(timespec='seconds')}")
+        self.retry_at = retry_at
+
+
+def _rate_limit_retry_at(exc: Exception) -> datetime | None:
+    """The time Gmail says to retry after, when *exc* is a rate-limit error."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    content = getattr(exc, "content", b"")
+    text = content.decode("utf-8", "replace") if isinstance(content, bytes) else str(content or "")
+    text = f"{text} {exc}"
+    limited = status == 429 or (status == 403 and ("rateLimitExceeded" in text or "userRateLimitExceeded" in text))
+    if not limited:
+        return None
+    match = re.search(r"Retry after (\d{4}-\d{2}-\d{2}T[0-9:.]+Z)", text)
+    if match:
+        try:
+            return datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc) + timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -218,34 +252,50 @@ class GmailApiClient:
                 parts.append(part)
         return parts
 
-    def search_pdf_attachments(self, query: str = DEFAULT_GMAIL_QUERY, max_results: int = 25) -> list[GmailPdfAttachment]:
+    def _execute(self, request):
+        try:
+            return request.execute()
+        except Exception as exc:
+            retry_at = _rate_limit_retry_at(exc)
+            if retry_at:
+                raise GmailRateLimited(retry_at) from exc
+            raise
+        finally:
+            time.sleep(GMAIL_CALL_PAUSE_SECONDS)
+
+    def search_pdf_attachments(
+        self,
+        query: str = DEFAULT_GMAIL_QUERY,
+        max_results: int = 25,
+        *,
+        skip_message_ids: Iterable[str] = (),
+    ) -> list[GmailPdfAttachment]:
+        """PDF attachments of matching emails, leaving out emails already handled.
+
+        Only new emails are opened and downloaded, so a check with nothing new
+        costs one Gmail call instead of one per email and attachment.
+        """
         service = self._get_service()
-        result = (
-            service.users()
-            .messages()
-            .list(userId=self.user_id, q=query, maxResults=max_results)
-            .execute()
+        skip = set(skip_message_ids)
+        result = self._execute(
+            service.users().messages().list(userId=self.user_id, q=query, maxResults=max_results)
         )
 
         attachments: list[GmailPdfAttachment] = []
         for item in result.get("messages", []):
-            message = (
-                service.users()
-                .messages()
-                .get(userId=self.user_id, id=item["id"], format="full")
-                .execute()
+            if item["id"] in skip:
+                continue
+            message = self._execute(
+                service.users().messages().get(userId=self.user_id, id=item["id"], format="full")
             )
             headers = self._headers(message)
             for part in self._pdf_parts(message.get("payload", {})):
                 attachment_id = part["body"]["attachmentId"]
-                raw = (
-                    service.users()
-                    .messages()
-                    .attachments()
-                    .get(userId=self.user_id, messageId=message["id"], id=attachment_id)
-                    .execute()
-                    .get("data", "")
-                )
+                raw = self._execute(
+                    service.users().messages().attachments().get(
+                        userId=self.user_id, messageId=message["id"], id=attachment_id
+                    )
+                ).get("data", "")
                 if not raw:
                     continue
                 content = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
