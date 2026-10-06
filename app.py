@@ -181,9 +181,13 @@ def render_sidebar() -> None:
             last = svc.LAST_GMAIL_CHECK
             if last.get("status") == "ok":
                 st.caption(
-                    f"Last check {local_time(last['at'])}: {last['checked']} PDFs, "
+                    f"Last check {local_time(last['at'])}: {last['checked']} new PDFs, "
                     f"{last.get('waiting', 0)} new lab reports waiting, {last['created']} assessments created, "
                     f"{last['ambiguous']} need review."
+                )
+            elif last.get("status") == "paused":
+                st.caption(
+                    f":orange[Gmail asked MTAR to slow down. Next check after {local_time(last['until'])}.]"
                 )
             elif last.get("status") == "error":
                 st.caption(f":red[Last check failed: {last.get('error')}]")
@@ -194,7 +198,7 @@ def render_sidebar() -> None:
                 if result:
                     flash(
                         "warning" if result["ambiguous"] else "success",
-                        f"Checked {result['checked']} PDF attachment(s): {result.get('waiting', 0)} new lab report(s) "
+                        f"Found {result['checked']} new PDF attachment(s): {result.get('waiting', 0)} new lab report(s) "
                         f"waiting on the PRO-LAB Reports page, {result['created']} assessment(s) created, "
                         f"{len(result['ambiguous'])} need review, ignored {result['ignored']}.",
                     )

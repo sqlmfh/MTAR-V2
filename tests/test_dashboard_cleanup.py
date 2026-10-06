@@ -26,7 +26,7 @@ class _FakeGmailClient:
     def configured(self):
         return True
 
-    def search_pdf_attachments(self):
+    def search_pdf_attachments(self, **kwargs):
         return list(self.attachments)
 
 
